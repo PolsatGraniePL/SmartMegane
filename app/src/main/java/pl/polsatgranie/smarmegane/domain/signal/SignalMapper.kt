@@ -1,6 +1,6 @@
-package pl.polsatgranie.smarmegane.domain.signal
+package pl.polsatgranie.smartmegane.domain.signal
 
-import pl.polsatgranie.smarmegane.data.can.CanFrame
+import pl.polsatgranie.smartmegane.data.can.CanFrame
 
 class SignalMapper(specs: List<SignalSpec>) {
     private val specsById = specs.groupBy { it.canId }

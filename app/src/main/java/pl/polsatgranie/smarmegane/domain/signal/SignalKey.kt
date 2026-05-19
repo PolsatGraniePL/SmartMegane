@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.domain.signal
+package pl.polsatgranie.smartmegane.domain.signal
 
 data class SignalKey(
     val id: String,

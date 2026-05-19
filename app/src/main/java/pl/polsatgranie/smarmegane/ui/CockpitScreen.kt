@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.ui
+package pl.polsatgranie.smartmegane.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,10 +18,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import pl.polsatgranie.smarmegane.data.serial.UsbConnectionState
-import pl.polsatgranie.smarmegane.domain.signal.SignalGroup
-import pl.polsatgranie.smarmegane.domain.signal.SignalState
-import pl.polsatgranie.smarmegane.domain.signal.displayText
+import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
+import pl.polsatgranie.smartmegane.domain.signal.SignalGroup
+import pl.polsatgranie.smartmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.domain.signal.displayText
 
 @Composable
 fun CockpitScreen(
@@ -39,7 +39,7 @@ fun CockpitScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text(text = "SmarMegane", style = MaterialTheme.typography.headlineSmall)
+            Text(text = "smartmegane", style = MaterialTheme.typography.headlineSmall)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

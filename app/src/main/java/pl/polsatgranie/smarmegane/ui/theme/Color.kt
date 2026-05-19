@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.ui.theme
+package pl.polsatgranie.smartmegane.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

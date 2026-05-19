@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.data.serial
+package pl.polsatgranie.smartmegane.data.serial
 
 data class UsbDeviceInfo(
     val deviceId: Int,

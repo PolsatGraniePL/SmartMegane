@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.data.can
+package pl.polsatgranie.smartmegane.data.can
 
 data class CanFrame(
     val id: Int,

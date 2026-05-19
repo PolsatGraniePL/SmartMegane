@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.domain.signal
+package pl.polsatgranie.smartmegane.domain.signal
 
 // Edit only this file to map CAN IDs/bytes/bits to UI signals.
 object SignalDefinitions {

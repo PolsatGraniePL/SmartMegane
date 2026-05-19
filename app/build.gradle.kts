@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "pl.polsatgranie.smarmegane"
+    namespace = "pl.polsatgranie.smartmegane"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "pl.polsatgranie.smarmegane"
+        applicationId = "pl.polsatgranie.smartmegane"
         minSdk = 35
         targetSdk = 36
         versionCode = 1

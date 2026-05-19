@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane
+package pl.polsatgranie.smartmegane
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -8,13 +8,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import pl.polsatgranie.smarmegane.data.can.WaveshareFrameParser
-import pl.polsatgranie.smarmegane.data.serial.UsbConnectionState
-import pl.polsatgranie.smarmegane.data.serial.UsbDeviceInfo
-import pl.polsatgranie.smarmegane.data.serial.UsbSerialDataSource
-import pl.polsatgranie.smarmegane.domain.signal.SignalDefinitions
-import pl.polsatgranie.smarmegane.domain.signal.SignalMapper
-import pl.polsatgranie.smarmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.data.can.WaveshareFrameParser
+import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
+import pl.polsatgranie.smartmegane.data.serial.UsbDeviceInfo
+import pl.polsatgranie.smartmegane.data.serial.UsbSerialDataSource
+import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
+import pl.polsatgranie.smartmegane.domain.signal.SignalMapper
+import pl.polsatgranie.smartmegane.domain.signal.SignalState
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {

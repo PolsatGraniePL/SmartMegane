@@ -23,5 +23,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SmarMegane"
+rootProject.name = "smartmegane"
 include(":app")

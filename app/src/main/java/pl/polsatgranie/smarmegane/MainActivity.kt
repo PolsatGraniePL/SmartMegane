@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane
+package pl.polsatgranie.smartmegane
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -13,12 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import pl.polsatgranie.smarmegane.data.serial.UsbConnectionState
-import pl.polsatgranie.smarmegane.domain.signal.SignalDefinitions
-import pl.polsatgranie.smarmegane.domain.signal.SignalState
-import pl.polsatgranie.smarmegane.domain.signal.SignalValue
-import pl.polsatgranie.smarmegane.ui.CockpitScreen
-import pl.polsatgranie.smarmegane.ui.theme.SmarMeganeTheme
+import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
+import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
+import pl.polsatgranie.smartmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.domain.signal.SignalValue
+import pl.polsatgranie.smartmegane.ui.CockpitScreen
+import pl.polsatgranie.smartmegane.ui.theme.smartmeganeTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
             val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
             val signalState by viewModel.signalState.collectAsStateWithLifecycle()
 
-            SmarMeganeTheme {
+            smartmeganeTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     CockpitScreen(
                         signalState = signalState,
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
 @Preview(showBackground = true)
 @Composable
 fun CockpitPreview() {
-    SmarMeganeTheme {
+    smartmeganeTheme {
         CockpitScreen(
             signalState = SignalState(
                 values = mapOf(

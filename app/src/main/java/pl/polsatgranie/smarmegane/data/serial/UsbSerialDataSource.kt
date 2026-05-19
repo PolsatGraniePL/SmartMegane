@@ -1,4 +1,4 @@
-package pl.polsatgranie.smarmegane.data.serial
+package pl.polsatgranie.smartmegane.data.serial
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -33,7 +33,7 @@ class UsbSerialDataSource(
     private val baudRate: Int = 2_000_000,
 ) {
     private companion object {
-        private const val TAG = "SmarMeganeUsb"
+        private const val TAG = "smartmeganeUsb"
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager

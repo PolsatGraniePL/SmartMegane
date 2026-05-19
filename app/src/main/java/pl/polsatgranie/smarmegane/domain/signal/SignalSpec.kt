@@ -1,6 +1,6 @@
-package pl.polsatgranie.smarmegane.domain.signal
+package pl.polsatgranie.smartmegane.domain.signal
 
-import pl.polsatgranie.smarmegane.data.can.CanFrame
+import pl.polsatgranie.smartmegane.data.can.CanFrame
 import kotlin.math.pow
 
 sealed interface SignalSpec {
