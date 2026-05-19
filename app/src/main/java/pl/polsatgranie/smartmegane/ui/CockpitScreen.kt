@@ -39,7 +39,7 @@ fun CockpitScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text(text = "smartmegane", style = MaterialTheme.typography.headlineSmall)
+            Text(text = "SmartMegane", style = MaterialTheme.typography.headlineSmall)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

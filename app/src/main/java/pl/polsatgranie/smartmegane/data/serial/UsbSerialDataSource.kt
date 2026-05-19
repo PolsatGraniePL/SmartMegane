@@ -33,7 +33,7 @@ class UsbSerialDataSource(
     private val baudRate: Int = 2_000_000,
 ) {
     private companion object {
-        private const val TAG = "smartmeganeUsb"
+        private const val TAG = "SmartMeganeUsb"
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager

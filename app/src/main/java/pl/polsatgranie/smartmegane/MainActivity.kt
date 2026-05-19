@@ -18,7 +18,7 @@ import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
 import pl.polsatgranie.smartmegane.domain.signal.SignalState
 import pl.polsatgranie.smartmegane.domain.signal.SignalValue
 import pl.polsatgranie.smartmegane.ui.CockpitScreen
-import pl.polsatgranie.smartmegane.ui.theme.smartmeganeTheme
+import pl.polsatgranie.smartmegane.ui.theme.SmartMeganeTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
             val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
             val signalState by viewModel.signalState.collectAsStateWithLifecycle()
 
-            smartmeganeTheme {
+            SmartMeganeTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     CockpitScreen(
                         signalState = signalState,
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
 @Preview(showBackground = true)
 @Composable
 fun CockpitPreview() {
-    smartmeganeTheme {
+    SmartMeganeTheme {
         CockpitScreen(
             signalState = SignalState(
                 values = mapOf(
