@@ -117,9 +117,9 @@ private fun readUnsigned(
 ): Long {
     var result = 0L
     val indices = if (littleEndian) {
-        (startByte until startByte + length)
-    } else {
         (startByte until startByte + length).reversed()
+    } else {
+        (startByte until startByte + length)
     }
     for (index in indices) {
         result = (result shl 8) or (data[index].toInt() and 0xFF).toLong()

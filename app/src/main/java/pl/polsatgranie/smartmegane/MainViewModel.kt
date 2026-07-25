@@ -6,15 +6,17 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import pl.polsatgranie.smartmegane.data.can.WaveshareFrameParser
 import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
 import pl.polsatgranie.smartmegane.data.serial.UsbDeviceInfo
 import pl.polsatgranie.smartmegane.data.serial.UsbSerialDataSource
+import pl.polsatgranie.smartmegane.data.vehicle.PlaceholderVehicleTelemetry
+import pl.polsatgranie.smartmegane.data.vehicle.VehicleSignalAdapter
 import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
 import pl.polsatgranie.smartmegane.domain.signal.SignalMapper
 import pl.polsatgranie.smartmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
@@ -23,6 +25,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val usbDataSource = UsbSerialDataSource(application)
+    private val vehicleTelemetry = PlaceholderVehicleTelemetry()
+    private val vehicleSignalAdapter = VehicleSignalAdapter()
     private val parser = WaveshareFrameParser()
     private val signalMapper = SignalMapper(SignalDefinitions.specs)
     private var lastDeviceIds: Set<Int> = emptySet()
@@ -34,6 +38,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val devices: StateFlow<List<UsbDeviceInfo>> = usbDataSource.devices
     val connectionState: StateFlow<UsbConnectionState> = usbDataSource.connectionState
+    private val _vehicleState = MutableStateFlow(vehicleTelemetry.state.value)
+    val vehicleState: StateFlow<VehicleState> = _vehicleState.asStateFlow()
 
     init {
         usbDataSource.startMonitoring()
@@ -41,7 +47,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             usbDataSource.bytes.collect { bytes ->
                 val frames = parser.append(bytes)
                 for (frame in frames) {
-                    _signalState.update { state -> signalMapper.applyFrame(state, frame) }
+                    val updatedSignals = signalMapper.applyFrame(_signalState.value, frame)
+                    _signalState.value = updatedSignals
+                    _vehicleState.value = vehicleSignalAdapter.merge(
+                        placeholder = vehicleTelemetry.state.value,
+                        signals = updatedSignals,
+                    )
                 }
             }
         }
@@ -78,6 +89,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             connectionState.collect { state ->
+                if (state is UsbConnectionState.Disconnected ||
+                    state is UsbConnectionState.NoDevice ||
+                    state is UsbConnectionState.Error
+                ) {
+                    _signalState.value = SignalState()
+                    _vehicleState.value = vehicleTelemetry.state.value
+                }
                 if (state is UsbConnectionState.PermissionDenied && lastAutoConnectDeviceId != null) {
                     autoConnectSuppressed = true
                 }
