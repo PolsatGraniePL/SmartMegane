@@ -21,12 +21,13 @@ class SweetSpotCalculatorTest {
     }
 
     @Test
-    fun safeRangeMovesDownAsVehicleStartsRolling() {
+    fun launchTargetDropsAtWalkingSpeedThenTracksFirstGearSynchronisation() {
         val stationary = SweetSpotCalculator.calculate(speedKph = 0, engineRpm = 1_300)
-        val rolling = SweetSpotCalculator.calculate(speedKph = 15, engineRpm = 1_300)
+        val walking = SweetSpotCalculator.calculate(speedKph = 5, engineRpm = 1_300)
+        val rolling = SweetSpotCalculator.calculate(speedKph = 10, engineRpm = 1_300)
 
-        assertTrue(rolling.safeRange.first < stationary.safeRange.first)
-        assertTrue(rolling.safeRange.last < stationary.safeRange.last)
+        assertTrue(walking.safeRange.first < stationary.safeRange.first)
+        assertTrue(rolling.safeRange.first > walking.safeRange.first)
     }
 
     @Test
@@ -35,5 +36,29 @@ class SweetSpotCalculatorTest {
         val cruising = SweetSpotCalculator.calculate(speedKph = 70, engineRpm = 1_800)
 
         assertTrue(launch.confidence > cruising.confidence)
+    }
+
+    @Test
+    fun highRpmIsJerkRiskRatherThanStallRisk() {
+        val result = SweetSpotCalculator.calculate(speedKph = 0, engineRpm = 2_500)
+
+        assertEquals(ClutchReleaseZone.JERK, result.zone)
+    }
+
+    @Test
+    fun clutchPressedRaisesConfidenceWithoutChangingTheCalculatedRange() {
+        val pressed = SweetSpotCalculator.calculate(
+            speedKph = 3.2,
+            engineRpm = 1_250.0,
+            isClutchPressed = true,
+        )
+        val released = SweetSpotCalculator.calculate(
+            speedKph = 3.2,
+            engineRpm = 1_250.0,
+            isClutchPressed = false,
+        )
+
+        assertEquals(pressed.safeRange, released.safeRange)
+        assertTrue(pressed.confidence > released.confidence)
     }
 }

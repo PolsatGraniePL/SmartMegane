@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import pl.polsatgranie.smartmegane.data.can.WaveshareFrameParser
 import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
@@ -22,10 +24,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         private const val TARGET_VENDOR_ID = 0x1A86
         private const val TARGET_PRODUCT_ID = 0x7523
+        private const val SIGNAL_WATCHDOG_INTERVAL_MS = 100L
+        private const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 
     private val usbDataSource = UsbSerialDataSource(application)
     private val vehicleTelemetry = PlaceholderVehicleTelemetry()
+    private val liveSignalFallbackState = vehicleTelemetry.state.value.copy(
+        engineRpm = 0,
+        engineRpmPrecise = null,
+        coolantTemperatureCelsius = 0,
+        odometerKm = 0,
+    )
     private val vehicleSignalAdapter = VehicleSignalAdapter()
     private val parser = WaveshareFrameParser()
     private val signalMapper = SignalMapper(SignalDefinitions.specs)
@@ -50,8 +60,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val updatedSignals = signalMapper.applyFrame(_signalState.value, frame)
                     _signalState.value = updatedSignals
                     _vehicleState.value = vehicleSignalAdapter.merge(
-                        placeholder = vehicleTelemetry.state.value,
+                        placeholder = liveSignalFallbackState,
                         signals = updatedSignals,
+                        nowMs = frame.timestampMs,
                     )
                 }
             }
@@ -88,11 +99,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
+            while (isActive) {
+                delay(SIGNAL_WATCHDOG_INTERVAL_MS)
+                if (connectionState.value is UsbConnectionState.Connected) {
+                    _vehicleState.value = vehicleSignalAdapter.merge(
+                        placeholder = liveSignalFallbackState,
+                        signals = _signalState.value,
+                        nowMs = System.nanoTime() / NANOS_PER_MILLISECOND,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
             connectionState.collect { state ->
+                if (state is UsbConnectionState.Connected) {
+                    _vehicleState.value = liveSignalFallbackState
+                }
                 if (state is UsbConnectionState.Disconnected ||
                     state is UsbConnectionState.NoDevice ||
                     state is UsbConnectionState.Error
                 ) {
+                    parser.reset()
                     _signalState.value = SignalState()
                     _vehicleState.value = vehicleTelemetry.state.value
                 }

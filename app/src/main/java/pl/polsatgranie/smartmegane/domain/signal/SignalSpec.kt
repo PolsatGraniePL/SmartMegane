@@ -18,6 +18,7 @@ data class BitSignalSpec(
     val activeHigh: Boolean = true,
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
+        if (byteIndex !in 0 until frame.dlc) return null
         val value = frame.data.getOrNull(byteIndex)?.toInt()?.and(0xFF) ?: return null
         val isSet = value and mask != 0
         val result = if (activeHigh) isSet else !isSet
@@ -34,6 +35,7 @@ data class EnumSignalSpec(
     val mapping: Map<Int, String>,
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
+        if (byteIndex !in 0 until frame.dlc) return null
         val value = frame.data.getOrNull(byteIndex)?.toInt()?.and(0xFF) ?: return null
         val code = (value and mask) shr shift
         val label = mapping[code] ?: "Unknown($code)"
@@ -53,7 +55,7 @@ data class IntSignalSpec(
     val unit: String? = null,
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
-        if (length <= 0 || startByte < 0 || startByte + length > frame.data.size) return null
+        if (length <= 0 || startByte < 0 || startByte + length > frame.dlc) return null
         val raw = readUnsigned(frame.data, startByte, length, littleEndian)
         val signedValue = if (signed) signExtend(raw, length * 8) else raw.toLong()
         val scaled = signedValue * scale + offset
@@ -67,6 +69,38 @@ data class IntSignalSpec(
         } else {
             value
         }
+    }
+}
+
+/**
+ * Reads a big-endian field that does not have to start on a byte boundary.
+ *
+ * [startBit] is counted from the most-significant bit of byte 0. For example,
+ * startBit=0/length=20 reads the first five hexadecimal nibbles of a frame.
+ */
+data class BigEndianBitFieldSignalSpec(
+    override val key: SignalKey,
+    override val canId: Int,
+    val startBit: Int,
+    val length: Int,
+    val scale: Double = 1.0,
+    val offset: Double = 0.0,
+    val unit: String? = null,
+) : SignalSpec {
+    override fun decode(frame: CanFrame): SignalValue? {
+        if (startBit < 0 || length !in 1..63 || startBit + length > frame.dlc * 8) {
+            return null
+        }
+
+        var raw = 0L
+        for (bitOffset in 0 until length) {
+            val absoluteBit = startBit + bitOffset
+            val byteIndex = absoluteBit / 8
+            val bitInByte = 7 - (absoluteBit % 8)
+            val bit = (frame.data[byteIndex].toInt() ushr bitInByte) and 0x01
+            raw = (raw shl 1) or bit.toLong()
+        }
+        return SignalValue.Number(raw * scale + offset, unit)
     }
 }
 
@@ -104,6 +138,24 @@ fun intSignal(
     length = length,
     signed = signed,
     littleEndian = littleEndian,
+    scale = scale,
+    offset = offset,
+    unit = unit,
+)
+
+fun bigEndianBitFieldSignal(
+    key: SignalKey,
+    canId: Int,
+    startBit: Int,
+    length: Int,
+    scale: Double = 1.0,
+    offset: Double = 0.0,
+    unit: String? = null,
+): SignalSpec = BigEndianBitFieldSignalSpec(
+    key = key,
+    canId = canId,
+    startBit = startBit,
+    length = length,
     scale = scale,
     offset = offset,
     unit = unit,

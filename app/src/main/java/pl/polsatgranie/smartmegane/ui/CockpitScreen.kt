@@ -119,8 +119,18 @@ fun CockpitScreen(
         ),
         label = "turnSignal",
     )
-    val sweetSpot = remember(vehicleState.speedKph, vehicleState.engineRpm) {
-        SweetSpotCalculator.calculate(vehicleState.speedKph, vehicleState.engineRpm)
+    val sweetSpot = remember(
+        vehicleState.speedKphPrecise,
+        vehicleState.speedKph,
+        vehicleState.engineRpmPrecise,
+        vehicleState.engineRpm,
+        vehicleState.isClutchPedalPressed,
+    ) {
+        SweetSpotCalculator.calculate(
+            speedKph = vehicleState.speedKphPrecise ?: vehicleState.speedKph.toDouble(),
+            engineRpm = vehicleState.engineRpmPrecise ?: vehicleState.engineRpm.toDouble(),
+            isClutchPressed = vehicleState.isClutchPedalPressed,
+        )
     }
 
     BoxWithConstraints(
@@ -921,16 +931,31 @@ private fun WarningIcon(
         indicator.severity == IndicatorSeverity.CRITICAL -> Red
         else -> Amber
     }
+    val cellWidth = if (indicator == VehicleIndicator.WIPERS) 34f else 25f
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size((25f * uiScale).dp)
+            .width((cellWidth * uiScale).dp)
+            .height((25f * uiScale).dp)
             .drawBehind {
                 drawCircle(
                     Brush.radialGradient(
-                        listOf(tint.copy(alpha = 0.18f), Color.Transparent),
+                        listOf(
+                            tint.copy(
+                                alpha = if (indicator == VehicleIndicator.WIPERS) {
+                                    0.27f
+                                } else {
+                                    0.18f
+                                },
+                            ),
+                            Color.Transparent,
+                        ),
                     ),
-                    radius = size.minDimension * 0.75f,
+                    radius = if (indicator == VehicleIndicator.WIPERS) {
+                        size.minDimension * 0.90f
+                    } else {
+                        size.minDimension * 0.75f
+                    },
                 )
             },
     ) {
@@ -938,7 +963,7 @@ private fun WarningIcon(
             WiperStatusSymbol(
                 mode = wiperMode,
                 tint = tint,
-                modifier = Modifier.size((21f * uiScale).dp),
+                modifier = Modifier.fillMaxSize(),
             )
         } else {
             IndicatorSymbol(
@@ -987,46 +1012,84 @@ private fun WiperStatusSymbol(
     )
     Box(
         contentAlignment = Alignment.Center,
-        modifier = modifier,
+        modifier = modifier
+            .background(
+                color = tint.copy(alpha = 0.075f),
+                shape = RoundedCornerShape(percent = 50),
+            )
+            .semantics {
+                contentDescription = when (mode) {
+                    WiperMode.INTERMITTENT -> "Wycieraczki: tryb przerywany"
+                    WiperMode.LOW -> "Wycieraczki: bieg wolny"
+                    WiperMode.HIGH -> "Wycieraczki: bieg szybki"
+                    WiperMode.OFF -> "Wycieraczki wyłączone"
+                }
+            },
     ) {
         IndicatorSymbol(
             indicator = VehicleIndicator.WIPERS,
             tint = tint,
             modifier = Modifier
-                .fillMaxSize()
+                .size(21.dp)
+                .align(Alignment.CenterStart)
+                .padding(start = 1.dp)
                 .graphicsLayer {
                     rotationZ = if (mode == WiperMode.OFF) 0f else sweep
                 },
         )
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier
+                .width(10.dp)
+                .height(19.dp)
+                .align(Alignment.CenterEnd)
+                .padding(end = 1.dp),
+        ) {
+            val centerX = size.width / 2f
+            val centerY = size.height / 2f
+            val stroke = size.width * 0.20f
             when (mode) {
                 WiperMode.INTERMITTENT -> {
+                    // A small clock makes intermittent operation readable even
+                    // when the one-shot sweep happens between two glances.
                     drawCircle(
                         color = tint,
-                        radius = size.minDimension * 0.055f,
-                        center = Offset(size.width * 0.82f, size.height * 0.20f),
+                        radius = size.width * 0.31f,
+                        center = Offset(centerX, centerY),
+                        style = Stroke(width = stroke),
+                    )
+                    drawLine(
+                        color = tint,
+                        start = Offset(centerX, centerY),
+                        end = Offset(centerX, centerY - size.height * 0.16f),
+                        strokeWidth = stroke,
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = tint,
+                        start = Offset(centerX, centerY),
+                        end = Offset(centerX + size.width * 0.18f, centerY),
+                        strokeWidth = stroke,
+                        cap = StrokeCap.Round,
                     )
                 }
 
                 WiperMode.LOW -> {
-                    drawLine(
+                    drawRoundRect(
                         color = tint,
-                        start = Offset(size.width * 0.76f, size.height * 0.16f),
-                        end = Offset(size.width * 0.90f, size.height * 0.16f),
-                        strokeWidth = size.minDimension * 0.055f,
-                        cap = StrokeCap.Round,
+                        topLeft = Offset(centerX - stroke / 2f, size.height * 0.21f),
+                        size = Size(stroke, size.height * 0.58f),
+                        cornerRadius = CornerRadius(stroke, stroke),
                     )
                 }
 
                 WiperMode.HIGH -> {
                     repeat(2) { index ->
-                        val y = size.height * (0.12f + index * 0.12f)
-                        drawLine(
+                        val x = size.width * (0.31f + index * 0.38f)
+                        drawRoundRect(
                             color = tint,
-                            start = Offset(size.width * 0.74f, y),
-                            end = Offset(size.width * 0.91f, y),
-                            strokeWidth = size.minDimension * 0.055f,
-                            cap = StrokeCap.Round,
+                            topLeft = Offset(x - stroke / 2f, size.height * 0.21f),
+                            size = Size(stroke, size.height * 0.58f),
+                            cornerRadius = CornerRadius(stroke, stroke),
                         )
                     }
                 }

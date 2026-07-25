@@ -10,6 +10,6 @@ class SignalMapper(specs: List<SignalSpec>) {
         val readings = specs.mapNotNull { spec ->
             spec.decode(frame)?.let { value -> SignalReading(spec.key, value) }
         }
-        return state.withUpdates(readings)
+        return state.withUpdates(readings, frame.timestampMs)
     }
 }

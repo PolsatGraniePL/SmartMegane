@@ -64,6 +64,54 @@ class IntSignalSpecTest {
         }
     }
 
+    @Test
+    fun decodesTwentyBitBigEndianFieldAcrossNibbleBoundary() {
+        val spec = BigEndianBitFieldSignalSpec(
+            key = key,
+            canId = 0x5C5,
+            startBit = 12,
+            length = 20,
+        )
+        val frame = CanFrame(
+            id = 0x5C5,
+            dlc = 8,
+            data = byteArrayOf(
+                0x08,
+                0x03,
+                0xF0.toByte(),
+                0x0A,
+                0,
+                0,
+                0,
+                0,
+            ),
+            timestampMs = 0,
+        )
+
+        val result = spec.decode(frame) as SignalValue.Number
+
+        assertEquals(258_058.0, result.value, 0.0)
+    }
+
+    @Test
+    fun refusesToDecodeBytesBeyondDlc() {
+        val spec = IntSignalSpec(
+            key = key,
+            canId = 0x123,
+            startByte = 1,
+            length = 2,
+            littleEndian = false,
+        )
+        val frame = CanFrame(
+            id = 0x123,
+            dlc = 2,
+            data = ByteArray(8),
+            timestampMs = 0,
+        )
+
+        assertEquals(null, spec.decode(frame))
+    }
+
     private fun decode(
         bytes: ByteArray,
         littleEndian: Boolean,
