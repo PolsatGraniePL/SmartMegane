@@ -61,4 +61,33 @@ class SweetSpotCalculatorTest {
         assertEquals(pressed.safeRange, released.safeRange)
         assertTrue(pressed.confidence > released.confidence)
     }
+
+    @Test
+    fun firstGearSynchronisationUsesTl4001FactoryDevelopment() {
+        val result = SweetSpotCalculator.calculate(
+            speedKph = 10.0,
+            engineRpm = 1_199.0,
+            isClutchPressed = true,
+        )
+
+        assertEquals(SweetSpotMode.LAUNCH, result.mode)
+        assertTrue(1_199 in result.safeRange)
+        assertEquals(1_199, result.targetRpm)
+    }
+
+    @Test
+    fun movingSweetSpotTargetsPreferredGearRevMatch() {
+        val result = SweetSpotCalculator.calculate(
+            speedKph = 48.70,
+            engineRpm = 1_000.0,
+            isClutchPressed = true,
+            preferredGear = 6,
+            guidanceConfidence = 0.9f,
+        )
+
+        assertEquals(SweetSpotMode.REV_MATCH, result.mode)
+        assertEquals(1_000, result.targetRpm)
+        assertEquals(ClutchReleaseZone.SWEET_SPOT, result.zone)
+        assertTrue(result.confidence > 0.9f)
+    }
 }

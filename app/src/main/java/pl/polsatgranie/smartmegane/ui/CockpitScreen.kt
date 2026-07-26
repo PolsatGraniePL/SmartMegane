@@ -16,6 +16,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -71,6 +74,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
 import pl.polsatgranie.smartmegane.domain.vehicle.IndicatorSeverity
+import pl.polsatgranie.smartmegane.domain.vehicle.GearGuidance
+import pl.polsatgranie.smartmegane.domain.vehicle.ShiftDirection
 import pl.polsatgranie.smartmegane.domain.vehicle.SweetSpotCalculator
 import pl.polsatgranie.smartmegane.domain.vehicle.SweetSpotState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleIndicator
@@ -81,6 +86,7 @@ import pl.polsatgranie.smartmegane.domain.vehicle.hasNonCriticalWarning
 import pl.polsatgranie.smartmegane.domain.vehicle.isActive
 import java.text.NumberFormat
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.min
@@ -94,11 +100,14 @@ private val Amber = Color(0xFFD99A38)
 private val Red = Color(0xFFE64B58)
 private val Blue = Color(0xFF4A91DC)
 private const val STEERING_VISIBILITY_TIMEOUT_MS = 5_000L
-private const val STEERING_RATIO = 15.5f
+private const val STEERING_DISPLAY_STEP_DEGREES = 2.5f
+private const val MAX_STEERING_WHEEL_ANGLE_DEGREES = 576f
+private const val MAX_ROAD_WHEEL_ANGLE_DEGREES = 32f
 
 @Composable
 fun CockpitScreen(
     vehicleState: VehicleState,
+    gearGuidance: GearGuidance,
     connectionState: UsbConnectionState,
     onReconnect: () -> Unit,
     modifier: Modifier = Modifier,
@@ -125,11 +134,15 @@ fun CockpitScreen(
         vehicleState.engineRpmPrecise,
         vehicleState.engineRpm,
         vehicleState.isClutchPedalPressed,
+        gearGuidance.revMatchGear,
+        gearGuidance.revMatchConfidence,
     ) {
         SweetSpotCalculator.calculate(
             speedKph = vehicleState.speedKphPrecise ?: vehicleState.speedKph.toDouble(),
             engineRpm = vehicleState.engineRpmPrecise ?: vehicleState.engineRpm.toDouble(),
             isClutchPressed = vehicleState.isClutchPedalPressed,
+            preferredGear = gearGuidance.revMatchGear,
+            guidanceConfidence = gearGuidance.revMatchConfidence,
         )
     }
 
@@ -139,8 +152,14 @@ fun CockpitScreen(
         val uiScale = min(maxWidth.value / 390f, maxHeight.value / 360f)
             .coerceIn(0.82f, 1.18f)
         DashboardBackdrop()
+        EdgeGlow(
+            state = vehicleState,
+            turnPulse = turnPulse,
+        )
         SweetSpotRail(
             state = sweetSpot,
+            gearGuidance = gearGuidance,
+            uiScale = uiScale,
             modifier = Modifier
                 .width((43f * uiScale).dp)
                 .fillMaxHeight()
@@ -179,7 +198,7 @@ fun CockpitScreen(
                 uiScale = uiScale,
             )
         }
-        EdgeGlow(
+        TurnSignalEdgeStroke(
             state = vehicleState,
             turnPulse = turnPulse,
         )
@@ -390,7 +409,7 @@ private fun PrimaryReadout(
                     state = state,
                     modifier = Modifier
                         .fillMaxHeight(0.91f)
-                        .aspectRatio(0.67f),
+                        .aspectRatio(0.55f),
                 )
             } else {
                 Column(
@@ -491,7 +510,10 @@ private fun VehicleStatusSymbol(
     )
 
     val steeringSample = state.steeringWheelAngleDegrees
-        ?.let { (it * 2f).roundToInt() / 2f }
+        ?.let {
+            (it / STEERING_DISPLAY_STEP_DEGREES).roundToInt() *
+                STEERING_DISPLAY_STEP_DEGREES
+        }
     var displayedSteeringAngle by remember {
         mutableStateOf(steeringSample ?: 0f)
     }
@@ -514,10 +536,17 @@ private fun VehicleStatusSymbol(
         label = "steeringGuideAlpha",
     )
     val roadWheelAngle by animateFloatAsState(
-        targetValue = (displayedSteeringAngle / STEERING_RATIO).coerceIn(-32f, 32f),
+        targetValue = (
+            displayedSteeringAngle /
+                MAX_STEERING_WHEEL_ANGLE_DEGREES *
+                MAX_ROAD_WHEEL_ANGLE_DEGREES
+            ).coerceIn(
+            -MAX_ROAD_WHEEL_ANGLE_DEGREES,
+            MAX_ROAD_WHEEL_ANGLE_DEGREES,
+        ),
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow,
+            stiffness = Spring.StiffnessMedium,
         ),
         label = "roadWheelAngle",
     )
@@ -530,59 +559,79 @@ private fun VehicleStatusSymbol(
         val sx = size.width / 100f
         val sy = size.height / 184f
         val line = min(sx, sy)
-        fun p(x: Float, y: Float) = Offset(x * sx, (y + 10f) * sy)
+        fun p(x: Float, y: Float) = Offset(x * sx, (y + 9f) * sy)
 
         drawOval(
             brush = Brush.radialGradient(
                 listOf(Color.Black.copy(alpha = 0.44f), Color.Transparent),
             ),
-            topLeft = p(9f, 143f),
-            size = Size(82f * sx, 17f * sy),
+            topLeft = p(8f, 149f),
+            size = Size(84f * sx, 17f * sy),
         )
 
         if (steeringGuideAlpha > 0.001f) {
-            val bend = roadWheelAngle / 32f * 12f
-            val guideColor = Blue.copy(alpha = 0.34f * steeringGuideAlpha)
+            val steeringStrength =
+                (abs(roadWheelAngle) / MAX_ROAD_WHEEL_ANGLE_DEGREES)
+                    .coerceIn(0f, 1f)
+            val guideTint = steeringGuideTint(steeringStrength)
+            val bend =
+                roadWheelAngle / MAX_ROAD_WHEEL_ANGLE_DEGREES * 21f
             val guideEffect = PathEffect.dashPathEffect(
-                floatArrayOf(3.2f * line, 3.7f * line),
+                floatArrayOf(4.8f * line, 3.2f * line),
             )
-            listOf(36f, 64f).forEach { x ->
+            listOf(15f, 85f).forEach { x ->
                 val frontTrack = Path().apply {
                     moveTo(p(x, 34f).x, p(x, 34f).y)
                     cubicTo(
-                        p(x + bend * 0.18f, 23f).x,
-                        p(x + bend * 0.18f, 23f).y,
-                        p(x + bend * 0.58f, 11f).x,
-                        p(x + bend * 0.58f, 11f).y,
+                        p(x + bend * 0.16f, 22f).x,
+                        p(x + bend * 0.16f, 22f).y,
+                        p(x + bend * 0.54f, 8f).x,
+                        p(x + bend * 0.54f, 8f).y,
                         p(x + bend, -9f).x,
                         p(x + bend, -9f).y,
                     )
                 }
                 val rearTrack = Path().apply {
-                    moveTo(p(x, 137f).x, p(x, 137f).y)
+                    moveTo(p(x, 130f).x, p(x, 130f).y)
                     cubicTo(
-                        p(x - bend * 0.18f, 146f).x,
-                        p(x - bend * 0.18f, 146f).y,
-                        p(x - bend * 0.58f, 155f).x,
-                        p(x - bend * 0.58f, 155f).y,
-                        p(x - bend, 174f).x,
-                        p(x - bend, 174f).y,
+                        p(x - bend * 0.14f, 142f).x,
+                        p(x - bend * 0.14f, 142f).y,
+                        p(x - bend * 0.50f, 157f).x,
+                        p(x - bend * 0.50f, 157f).y,
+                        p(x - bend * 0.88f, 174f).x,
+                        p(x - bend * 0.88f, 174f).y,
                     )
                 }
                 drawPath(
                     frontTrack,
-                    guideColor,
+                    guideTint.copy(alpha = 0.24f * steeringGuideAlpha),
                     style = Stroke(
-                        width = 1.15f * line,
+                        width = 6.2f * line,
+                        cap = StrokeCap.Round,
+                    ),
+                )
+                drawPath(
+                    rearTrack,
+                    guideTint.copy(alpha = 0.18f * steeringGuideAlpha),
+                    style = Stroke(
+                        width = 5.2f * line,
+                        cap = StrokeCap.Round,
+                    ),
+                )
+                drawPath(
+                    frontTrack,
+                    guideTint.copy(alpha = 0.92f * steeringGuideAlpha),
+                    style = Stroke(
+                        width = 2.15f * line,
                         cap = StrokeCap.Round,
                         pathEffect = guideEffect,
                     ),
                 )
                 drawPath(
                     rearTrack,
-                    guideColor.copy(alpha = guideColor.alpha * 0.72f),
+                    guideTint.copy(alpha = 0.72f * steeringGuideAlpha),
                     style = Stroke(
-                        width = 1f * line,
+                        width = 1.8f * line,
                         cap = StrokeCap.Round,
                         pathEffect = guideEffect,
                     ),
@@ -590,191 +639,468 @@ private fun VehicleStatusSymbol(
             }
         }
 
-        val visibleWheelAngle = roadWheelAngle * steeringGuideAlpha
-        rotate(visibleWheelAngle, p(16f, 55f)) {
-            drawRoundRect(
-                color = Color.Black.copy(alpha = 0.88f),
-                topLeft = p(9f, 41f),
-                size = Size(14f * sx, 28f * sy),
-                cornerRadius = CornerRadius(5f * line),
-            )
+        val wheelStrength =
+            (abs(roadWheelAngle) / MAX_ROAD_WHEEL_ANGLE_DEGREES)
+                .coerceIn(0f, 1f)
+        val wheelGuideTint = steeringGuideTint(wheelStrength)
+        drawRoundRect(
+            color = Color.Black.copy(alpha = 0.88f * (1f - steeringGuideAlpha)),
+            topLeft = p(8f, 20f),
+            size = Size(14f * sx, 28f * sy),
+            cornerRadius = CornerRadius(5f * line),
+        )
+        if (steeringGuideAlpha > 0.001f) {
+            rotate(roadWheelAngle, p(15f, 34f)) {
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.88f * steeringGuideAlpha),
+                    topLeft = p(8f, 20f),
+                    size = Size(14f * sx, 28f * sy),
+                    cornerRadius = CornerRadius(5f * line),
+                )
+                drawRoundRect(
+                    color = wheelGuideTint.copy(alpha = 0.26f * steeringGuideAlpha),
+                    topLeft = p(7f, 19f),
+                    size = Size(16f * sx, 30f * sy),
+                    cornerRadius = CornerRadius(6f * line),
+                    style = Stroke(4.6f * line),
+                )
+                drawRoundRect(
+                    color = wheelGuideTint.copy(alpha = 0.96f * steeringGuideAlpha),
+                    topLeft = p(8f, 20f),
+                    size = Size(14f * sx, 28f * sy),
+                    cornerRadius = CornerRadius(5f * line),
+                    style = Stroke(2.1f * line),
+                )
+            }
         }
-        rotate(visibleWheelAngle, p(84f, 55f)) {
-            drawRoundRect(
-                color = Color.Black.copy(alpha = 0.88f),
-                topLeft = p(77f, 41f),
-                size = Size(14f * sx, 28f * sy),
-                cornerRadius = CornerRadius(5f * line),
-            )
+        drawRoundRect(
+            color = Color.Black.copy(alpha = 0.88f * (1f - steeringGuideAlpha)),
+            topLeft = p(78f, 20f),
+            size = Size(14f * sx, 28f * sy),
+            cornerRadius = CornerRadius(5f * line),
+        )
+        if (steeringGuideAlpha > 0.001f) {
+            rotate(roadWheelAngle, p(85f, 34f)) {
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.88f * steeringGuideAlpha),
+                    topLeft = p(78f, 20f),
+                    size = Size(14f * sx, 28f * sy),
+                    cornerRadius = CornerRadius(5f * line),
+                )
+                drawRoundRect(
+                    color = wheelGuideTint.copy(alpha = 0.26f * steeringGuideAlpha),
+                    topLeft = p(77f, 19f),
+                    size = Size(16f * sx, 30f * sy),
+                    cornerRadius = CornerRadius(6f * line),
+                    style = Stroke(4.6f * line),
+                )
+                drawRoundRect(
+                    color = wheelGuideTint.copy(alpha = 0.96f * steeringGuideAlpha),
+                    topLeft = p(78f, 20f),
+                    size = Size(14f * sx, 28f * sy),
+                    cornerRadius = CornerRadius(5f * line),
+                    style = Stroke(2.1f * line),
+                )
+            }
         }
         drawRoundRect(
             color = Color.Black.copy(alpha = 0.82f),
-            topLeft = p(9f, 99f),
+            topLeft = p(8f, 116f),
             size = Size(14f * sx, 27f * sy),
             cornerRadius = CornerRadius(5f * line),
         )
         drawRoundRect(
             color = Color.Black.copy(alpha = 0.82f),
-            topLeft = p(77f, 99f),
+            topLeft = p(78f, 116f),
             size = Size(14f * sx, 27f * sy),
             cornerRadius = CornerRadius(5f * line),
         )
 
+        // Wide mirrors, long roof and the rear axle pushed towards the tail are
+        // the strongest top-view cues of the Mégane II Grandtour.
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                listOf(Color(0xFF182127), Color(0xFF5C6870)),
+            ),
+            topLeft = p(5f, 48f),
+            size = Size(17f * sx, 10f * sy),
+            cornerRadius = CornerRadius(4f * line),
+        )
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                listOf(Color(0xFF5C6870), Color(0xFF182127)),
+            ),
+            topLeft = p(78f, 48f),
+            size = Size(17f * sx, 10f * sy),
+            cornerRadius = CornerRadius(4f * line),
+        )
+
         val body = Path().apply {
-            moveTo(p(35f, 5f).x, p(35f, 5f).y)
-            quadraticTo(
-                p(50f, 1f).x,
-                p(50f, 1f).y,
-                p(65f, 5f).x,
-                p(65f, 5f).y,
+            moveTo(p(38f, 2f).x, p(38f, 2f).y)
+            cubicTo(
+                p(44f, 0f).x,
+                p(44f, 0f).y,
+                p(56f, 0f).x,
+                p(56f, 0f).y,
+                p(62f, 2f).x,
+                p(62f, 2f).y,
             )
-            lineTo(p(72f, 14f).x, p(72f, 14f).y)
-            lineTo(p(77f, 32f).x, p(77f, 32f).y)
-            lineTo(p(82f, 41f).x, p(82f, 41f).y)
-            lineTo(p(82f, 123f).x, p(82f, 123f).y)
-            lineTo(p(77f, 145f).x, p(77f, 145f).y)
-            lineTo(p(70f, 156f).x, p(70f, 156f).y)
-            lineTo(p(30f, 156f).x, p(30f, 156f).y)
-            lineTo(p(23f, 145f).x, p(23f, 145f).y)
-            lineTo(p(18f, 123f).x, p(18f, 123f).y)
-            lineTo(p(18f, 41f).x, p(18f, 41f).y)
-            lineTo(p(23f, 32f).x, p(23f, 32f).y)
-            lineTo(p(28f, 14f).x, p(28f, 14f).y)
+            lineTo(p(69f, 5f).x, p(69f, 5f).y)
+            quadraticTo(
+                p(76f, 9f).x,
+                p(76f, 9f).y,
+                p(78f, 18f).x,
+                p(78f, 18f).y,
+            )
+            lineTo(p(82f, 29f).x, p(82f, 29f).y)
+            quadraticTo(
+                p(84f, 34f).x,
+                p(84f, 34f).y,
+                p(84f, 43f).x,
+                p(84f, 43f).y,
+            )
+            lineTo(p(84f, 139f).x, p(84f, 139f).y)
+            quadraticTo(
+                p(84f, 151f).x,
+                p(84f, 151f).y,
+                p(77f, 158f).x,
+                p(77f, 158f).y,
+            )
+            quadraticTo(
+                p(70f, 166f).x,
+                p(70f, 166f).y,
+                p(61f, 167f).x,
+                p(61f, 167f).y,
+            )
+            lineTo(p(39f, 167f).x, p(39f, 167f).y)
+            quadraticTo(
+                p(30f, 166f).x,
+                p(30f, 166f).y,
+                p(23f, 158f).x,
+                p(23f, 158f).y,
+            )
+            quadraticTo(
+                p(16f, 151f).x,
+                p(16f, 151f).y,
+                p(16f, 139f).x,
+                p(16f, 139f).y,
+            )
+            lineTo(p(16f, 43f).x, p(16f, 43f).y)
+            quadraticTo(
+                p(16f, 34f).x,
+                p(16f, 34f).y,
+                p(18f, 29f).x,
+                p(18f, 29f).y,
+            )
+            lineTo(p(22f, 18f).x, p(22f, 18f).y)
+            quadraticTo(
+                p(24f, 9f).x,
+                p(24f, 9f).y,
+                p(31f, 5f).x,
+                p(31f, 5f).y,
+            )
             close()
         }
         drawPath(
             path = body,
             brush = Brush.verticalGradient(
                 listOf(
-                    Color(0xFF7E898E),
-                    Color(0xFF394247),
-                    Color(0xFF20272B),
+                    Color(0xFF68757E),
+                    Color(0xFF3D4A52),
+                    Color(0xFF263139),
+                    Color(0xFF182127),
                 ),
             ),
         )
         drawPath(
             body,
-            Color.White.copy(alpha = 0.42f),
+            Color(0xFFD9E3E7).copy(alpha = 0.44f),
             style = Stroke(1.45f * line, join = StrokeJoin.Round),
+        )
+        drawPath(
+            body,
+            Color(0xFF10171B).copy(alpha = 0.72f),
+            style = Stroke(3.8f * line, join = StrokeJoin.Round),
+        )
+        drawPath(
+            body,
+            Color.White.copy(alpha = 0.36f),
+            style = Stroke(1.05f * line, join = StrokeJoin.Round),
+        )
+
+        val hood = Path().apply {
+            moveTo(p(39f, 4.5f).x, p(39f, 4.5f).y)
+            quadraticTo(
+                p(50f, 2.3f).x,
+                p(50f, 2.3f).y,
+                p(61f, 4.5f).x,
+                p(61f, 4.5f).y,
+            )
+            cubicTo(
+                p(66f, 11f).x,
+                p(66f, 11f).y,
+                p(69f, 21f).x,
+                p(69f, 21f).y,
+                p(70f, 28.5f).x,
+                p(70f, 28.5f).y,
+            )
+            quadraticTo(
+                p(50f, 31f).x,
+                p(50f, 31f).y,
+                p(30f, 28.5f).x,
+                p(30f, 28.5f).y,
+            )
+            cubicTo(
+                p(31f, 21f).x,
+                p(31f, 21f).y,
+                p(34f, 11f).x,
+                p(34f, 11f).y,
+                p(39f, 4.5f).x,
+                p(39f, 4.5f).y,
+            )
+            close()
+        }
+        drawPath(
+            hood,
+            Brush.verticalGradient(
+                listOf(
+                    Color(0xFF59656C).copy(alpha = 0.38f),
+                    Color(0xFF303C43).copy(alpha = 0.22f),
+                ),
+            ),
+        )
+        drawPath(
+            hood,
+            Color.White.copy(alpha = 0.10f),
+            style = Stroke(0.8f * line, join = StrokeJoin.Round),
         )
 
         val windshield = Path().apply {
-            moveTo(p(31f, 37f).x, p(31f, 37f).y)
-            lineTo(p(36f, 18f).x, p(36f, 18f).y)
+            moveTo(p(29f, 33f).x, p(29f, 33f).y)
             quadraticTo(
-                p(50f, 12f).x,
-                p(50f, 12f).y,
-                p(64f, 18f).x,
-                p(64f, 18f).y,
+                p(31f, 29f).x,
+                p(31f, 29f).y,
+                p(36f, 28f).x,
+                p(36f, 28f).y,
             )
-            lineTo(p(69f, 37f).x, p(69f, 37f).y)
-            lineTo(p(64f, 56f).x, p(64f, 56f).y)
-            lineTo(p(36f, 56f).x, p(36f, 56f).y)
+            quadraticTo(
+                p(50f, 25.5f).x,
+                p(50f, 25.5f).y,
+                p(64f, 28f).x,
+                p(64f, 28f).y,
+            )
+            quadraticTo(
+                p(69f, 29f).x,
+                p(69f, 29f).y,
+                p(71f, 33f).x,
+                p(71f, 33f).y,
+            )
+            lineTo(p(66f, 58f).x, p(66f, 58f).y)
+            quadraticTo(
+                p(65f, 61f).x,
+                p(65f, 61f).y,
+                p(61f, 62f).x,
+                p(61f, 62f).y,
+            )
+            lineTo(p(39f, 62f).x, p(39f, 62f).y)
+            quadraticTo(
+                p(35f, 61f).x,
+                p(35f, 61f).y,
+                p(34f, 58f).x,
+                p(34f, 58f).y,
+            )
             close()
         }
         drawPath(
             windshield,
             Brush.verticalGradient(
                 listOf(
-                    Color(0xFF8FA8B3).copy(alpha = 0.62f),
-                    Color(0xFF26363E).copy(alpha = 0.78f),
+                    Color(0xFF38505A).copy(alpha = 0.88f),
+                    Color(0xFF17252C).copy(alpha = 0.98f),
                 ),
             ),
         )
+        drawPath(
+            windshield,
+            Color.White.copy(alpha = 0.15f),
+            style = Stroke(0.9f * line, join = StrokeJoin.Round),
+        )
+        drawLine(
+            color = Color(0xFF080D10).copy(alpha = 0.30f),
+            start = p(34f, 32.5f),
+            end = p(66f, 32.5f),
+            strokeWidth = 0.75f * line,
+            cap = StrokeCap.Round,
+        )
+
         drawRoundRect(
             brush = Brush.verticalGradient(
                 listOf(
-                    Color(0xFF1B252A),
-                    Color(0xFF304047),
+                    Color(0xFF18242A),
+                    Color(0xFF2E414A),
+                    Color(0xFF1A252B),
                 ),
             ),
-            topLeft = p(32f, 61f),
-            size = Size(36f * sx, 44f * sy),
-            cornerRadius = CornerRadius(6f * line),
+            topLeft = p(27f, 64f),
+            size = Size(46f * sx, 74f * sy),
+            cornerRadius = CornerRadius(4.5f * line),
         )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.10f),
+            topLeft = p(27f, 64f),
+            size = Size(46f * sx, 74f * sy),
+            cornerRadius = CornerRadius(4.5f * line),
+            style = Stroke(1f * line),
+        )
+
+        // Raised roof rails continue almost to the square tailgate.
+        listOf(24.5f, 75.5f).forEach { railX ->
+            drawLine(
+                color = Color.Black.copy(alpha = 0.72f),
+                start = p(railX, 57f),
+                end = p(railX, 146f),
+                strokeWidth = 4.7f * line,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color(0xFFB8C2C7).copy(alpha = 0.52f),
+                start = p(railX - 0.45f, 58f),
+                end = p(railX - 0.45f, 145f),
+                strokeWidth = 1.15f * line,
+                cap = StrokeCap.Round,
+            )
+        }
+
         val rearGlass = Path().apply {
-            moveTo(p(33f, 110f).x, p(33f, 110f).y)
-            lineTo(p(67f, 110f).x, p(67f, 110f).y)
-            lineTo(p(69f, 137f).x, p(69f, 137f).y)
-            lineTo(p(31f, 137f).x, p(31f, 137f).y)
+            moveTo(p(27f, 140f).x, p(27f, 140f).y)
+            lineTo(p(73f, 140f).x, p(73f, 140f).y)
+            lineTo(p(78f, 156f).x, p(78f, 156f).y)
+            quadraticTo(
+                p(50f, 161f).x,
+                p(50f, 161f).y,
+                p(22f, 156f).x,
+                p(22f, 156f).y,
+            )
             close()
         }
         drawPath(
             rearGlass,
             Brush.verticalGradient(
                 listOf(
-                    Color(0xFF30434C),
-                    Color(0xFF86A1AC).copy(alpha = 0.58f),
+                    Color(0xFF23343C).copy(alpha = 0.96f * (1f - trunk)),
+                    Color(0xFF71909D).copy(alpha = 0.68f * (1f - trunk)),
                 ),
             ),
         )
+        drawPath(
+            rearGlass,
+            Color.White.copy(alpha = 0.18f * (1f - trunk)),
+            style = Stroke(1f * line, join = StrokeJoin.Round),
+        )
+
+        // Closed door seams keep the vehicle readable even with every opening shut.
+        listOf(64f, 101f, 141f).forEach { y ->
+            drawLine(
+                color = Color.Black.copy(alpha = 0.34f),
+                start = p(17f, y),
+                end = p(28f, y + if (y == 64f) 2f else 0f),
+                strokeWidth = 1.2f * line,
+            )
+            drawLine(
+                color = Color.Black.copy(alpha = 0.34f),
+                start = p(83f, y),
+                end = p(72f, y + if (y == 64f) 2f else 0f),
+                strokeWidth = 1.2f * line,
+            )
+        }
+        // In top view the headlamps remain slim, subdued edge details.
+        val leftHeadlamp = Path().apply {
+            moveTo(p(24.5f, 15.5f).x, p(24.5f, 15.5f).y)
+            cubicTo(
+                p(28f, 11.5f).x,
+                p(28f, 11.5f).y,
+                p(34f, 8.5f).x,
+                p(34f, 8.5f).y,
+                p(39f, 8f).x,
+                p(39f, 8f).y,
+            )
+            quadraticTo(
+                p(38.5f, 11f).x,
+                p(38.5f, 11f).y,
+                p(36.5f, 13f).x,
+                p(36.5f, 13f).y,
+            )
+            quadraticTo(
+                p(31f, 14f).x,
+                p(31f, 14f).y,
+                p(26f, 18.5f).x,
+                p(26f, 18.5f).y,
+            )
+            close()
+        }
+        val rightHeadlamp = Path().apply {
+            moveTo(p(75.5f, 15.5f).x, p(75.5f, 15.5f).y)
+            cubicTo(
+                p(72f, 11.5f).x,
+                p(72f, 11.5f).y,
+                p(66f, 8.5f).x,
+                p(66f, 8.5f).y,
+                p(61f, 8f).x,
+                p(61f, 8f).y,
+            )
+            quadraticTo(
+                p(61.5f, 11f).x,
+                p(61.5f, 11f).y,
+                p(63.5f, 13f).x,
+                p(63.5f, 13f).y,
+            )
+            quadraticTo(
+                p(69f, 14f).x,
+                p(69f, 14f).y,
+                p(74f, 18.5f).x,
+                p(74f, 18.5f).y,
+            )
+            close()
+        }
+        listOf(leftHeadlamp, rightHeadlamp).forEach { lamp ->
+            drawPath(
+                path = lamp,
+                color = Color(0xFFAAB8BD).copy(alpha = 0.46f),
+            )
+            drawPath(
+                lamp,
+                Color.White.copy(alpha = 0.24f),
+                style = Stroke(0.65f * line, join = StrokeJoin.Round),
+            )
+        }
+        drawLine(
+            color = Color.White.copy(alpha = 0.14f),
+            start = p(38f, 4f),
+            end = p(62f, 4f),
+            strokeWidth = 0.85f * line,
+            cap = StrokeCap.Round,
+        )
 
         drawLine(
-            Color.White.copy(alpha = 0.14f),
-            p(19f, 80f),
-            p(81f, 80f),
-            1f * line,
+            color = Color(0xFF0A0D0F).copy(alpha = 0.88f),
+            start = p(28f, 163f),
+            end = p(72f, 163f),
+            strokeWidth = 3.1f * line,
+            cap = StrokeCap.Round,
         )
         drawLine(
-            Color.White.copy(alpha = 0.10f),
-            p(24f, 39f),
-            p(20f, 125f),
-            1f * line,
+            color = Red.copy(alpha = 0.82f),
+            start = p(22f, 151f),
+            end = p(28f, 162f),
+            strokeWidth = 3.4f * line,
+            cap = StrokeCap.Round,
         )
         drawLine(
-            Color.White.copy(alpha = 0.10f),
-            p(76f, 39f),
-            p(80f, 125f),
-            1f * line,
-        )
-        drawLine(
-            Color.White.copy(alpha = 0.22f),
-            p(28f, 35f),
-            p(72f, 35f),
-            1.15f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Color.White.copy(alpha = 0.16f),
-            p(28f, 145f),
-            p(72f, 145f),
-            1.2f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Color(0xFF0A0D0F).copy(alpha = 0.78f),
-            p(29f, 151f),
-            p(71f, 151f),
-            3.1f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Color(0xFFDCEEFF).copy(alpha = 0.76f),
-            p(31f, 11f),
-            p(42f, 8f),
-            2.8f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Color(0xFFDCEEFF).copy(alpha = 0.76f),
-            p(58f, 8f),
-            p(69f, 11f),
-            2.8f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Red.copy(alpha = 0.72f),
-            p(28f, 148f),
-            p(39f, 151f),
-            2.8f * line,
-            StrokeCap.Round,
-        )
-        drawLine(
-            Red.copy(alpha = 0.72f),
-            p(61f, 151f),
-            p(72f, 148f),
-            2.8f * line,
-            StrokeCap.Round,
+            color = Red.copy(alpha = 0.82f),
+            start = p(78f, 151f),
+            end = p(72f, 162f),
+            strokeWidth = 3.4f * line,
+            cap = StrokeCap.Round,
         )
 
         fun drawDoor(
@@ -783,18 +1109,18 @@ private fun VehicleStatusSymbol(
             openness: Float,
             windowOpenness: Float,
         ) {
-            val xOuter = if (left) 20f else 80f
-            val xInner = if (left) 30f else 70f
-            val top = if (front) 39f else 83f
-            val bottom = if (front) 77f else 126f
+            val xOuter = if (left) 17f else 83f
+            val xInner = if (left) 29f else 71f
+            val top = if (front) 62f else 101f
+            val bottom = if (front) 99f else 142f
             val pivot = p(xOuter, top)
-            val degrees = (if (left) 38f else -38f) * openness
+            val degrees = (if (left) 31f else -31f) * openness
             if (openness > 0.01f) {
-                val cavityX = if (left) 17f else 76f
+                val cavityX = if (left) 15f else 77f
                 drawRoundRect(
                     Color.Black.copy(alpha = 0.74f * openness),
                     topLeft = p(cavityX, top + 2f),
-                    size = Size(7f * sx, (bottom - top - 3f) * sy),
+                    size = Size(8f * sx, (bottom - top - 3f) * sy),
                     cornerRadius = CornerRadius(2f * line),
                 )
             }
@@ -820,13 +1146,15 @@ private fun VehicleStatusSymbol(
                     )
                 }
                 val glassTop =
-                    top + 5f + (bottom - top - 10f) * 0.72f * windowOpenness
+                    top + 4f + (bottom - top - 8f) * 0.90f * windowOpenness
                 if (glassTop < bottom - 4f) {
                     drawLine(
-                        Blue.copy(alpha = 0.32f + 0.48f * windowOpenness),
+                        Color(0xFF72BBDD).copy(
+                            alpha = 0.56f * (1f - windowOpenness * 0.72f),
+                        ),
                         p(xInner, glassTop),
                         p(xInner, bottom - 5f),
-                        (1.2f + 0.7f * windowOpenness) * line,
+                        1.55f * line,
                         StrokeCap.Round,
                     )
                 }
@@ -839,21 +1167,36 @@ private fun VehicleStatusSymbol(
         drawDoor(false, false, rearRight, rearRightWindow)
 
         if (trunk > 0.01f) {
-            translate(0f, 9f * sy * trunk) {
+            drawRoundRect(
+                color = Color.Black.copy(alpha = 0.72f * trunk),
+                topLeft = p(22f, 148f),
+                size = Size(56f * sx, 15f * sy),
+                cornerRadius = CornerRadius(3f * line),
+            )
+            translate(0f, 12f * sy * trunk) {
                 drawRoundRect(
                     brush = Brush.verticalGradient(
-                        listOf(Color(0xFF69747A), Color(0xFF252C30)),
+                        listOf(
+                            Color(0xFF64727A).copy(alpha = trunk),
+                            Color(0xFF202A30).copy(alpha = trunk),
+                        ),
                     ),
-                    topLeft = p(32f, 142f),
-                    size = Size(36f * sx, 10f * sy),
+                    topLeft = p(22f, 146f),
+                    size = Size(56f * sx, 17f * sy),
                     cornerRadius = CornerRadius(3f * line),
                 )
                 drawRoundRect(
                     color = Amber.copy(alpha = 0.72f * trunk),
-                    topLeft = p(32f, 142f),
-                    size = Size(36f * sx, 10f * sy),
+                    topLeft = p(22f, 146f),
+                    size = Size(56f * sx, 17f * sy),
                     cornerRadius = CornerRadius(3f * line),
-                    style = Stroke(1.1f * line),
+                    style = Stroke(1.35f * line),
+                )
+                drawRoundRect(
+                    color = Color(0xFF7393A0).copy(alpha = 0.72f * trunk),
+                    topLeft = p(27f, 149f),
+                    size = Size(46f * sx, 8f * sy),
+                    cornerRadius = CornerRadius(2f * line),
                 )
             }
         }
@@ -1258,116 +1601,313 @@ private fun UsbStatusDot(
 }
 
 @Composable
+private fun GearRecommendationReadout(
+    guidance: GearGuidance,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    var lastPreferredGear by remember {
+        mutableStateOf(guidance.preferredGear)
+    }
+    var lastShiftDirection by remember {
+        mutableStateOf(guidance.shiftDirection)
+    }
+    LaunchedEffect(guidance.preferredGear) {
+        guidance.preferredGear?.let { lastPreferredGear = it }
+    }
+    LaunchedEffect(guidance.shiftDirection) {
+        if (guidance.shiftDirection != ShiftDirection.NONE) {
+            lastShiftDirection = guidance.shiftDirection
+        }
+    }
+    val displayedGear =
+        guidance.preferredGear ?: lastPreferredGear ?: 1
+    val displayedDirection =
+        guidance.shiftDirection.takeUnless { it == ShiftDirection.NONE }
+            ?: lastShiftDirection
+    val arrowPresence by animateFloatAsState(
+        targetValue =
+            if (guidance.shiftDirection == ShiftDirection.NONE) 0f else 1f,
+        animationSpec = if (guidance.shiftDirection == ShiftDirection.NONE) {
+            tween(100)
+        } else {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium,
+            )
+        },
+        label = "gearArrowPresence",
+    )
+    AnimatedVisibility(
+        visible = guidance.preferredGear != null,
+        enter = fadeIn(tween(150)) + scaleIn(tween(170), initialScale = 0.92f),
+        exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.96f),
+        modifier = modifier,
+    ) {
+        Box(
+            contentAlignment = Alignment.TopCenter,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height((58f * uiScale).dp)
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                CanvasBlack.copy(alpha = 0.86f),
+                                CanvasBlack.copy(alpha = 0.52f),
+                                Color.Transparent,
+                            ),
+                            endY = size.height,
+                        ),
+                    )
+                },
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.padding(top = (7f * uiScale).dp),
+            ) {
+                AnimatedContent(
+                    targetState = displayedGear,
+                    contentAlignment = Alignment.Center,
+                    transitionSpec = {
+                        val increasing = targetState > initialState
+                        (
+                            fadeIn(tween(140)) +
+                                slideInVertically(tween(160)) {
+                                    if (increasing) it / 4 else -it / 4
+                                }
+                            ).togetherWith(
+                            fadeOut(tween(110)) +
+                                slideOutVertically(tween(140)) {
+                                    if (increasing) -it / 4 else it / 4
+                                },
+                        )
+                    },
+                    label = "preferredGear",
+                    modifier = Modifier.width((18f * uiScale).dp),
+                ) { gear ->
+                    Text(
+                        text = gear.toString(),
+                        color = Ink,
+                        fontSize = (24f * uiScale).sp,
+                        lineHeight = (26f * uiScale).sp,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = FontFamily.SansSerif,
+                        style = TextStyle(fontFeatureSettings = "tnum"),
+                    )
+                }
+                Spacer(Modifier.width((1.5f * uiScale).dp))
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .width((9f * uiScale).dp)
+                        .height((18f * uiScale).dp),
+                ) {
+                    val directionTint = when (displayedDirection) {
+                        ShiftDirection.UP -> Color(0xFF55D6A3)
+                        ShiftDirection.DOWN -> Color(0xFFFFB85A)
+                        ShiftDirection.NONE -> Color.Transparent
+                    }
+                    Canvas(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                alpha = arrowPresence
+                                scaleX = 0.72f + arrowPresence * 0.28f
+                                scaleY = 0.72f + arrowPresence * 0.28f
+                            },
+                    ) {
+                        val pointsUp =
+                            displayedDirection == ShiftDirection.UP
+                        val shaftStartY =
+                            if (pointsUp) size.height * 0.84f else size.height * 0.16f
+                        val shaftEndY =
+                            if (pointsUp) size.height * 0.34f else size.height * 0.66f
+                        drawLine(
+                            color = directionTint,
+                            start = Offset(size.width / 2f, shaftStartY),
+                            end = Offset(size.width / 2f, shaftEndY),
+                            strokeWidth = 1.55.dp.toPx() * uiScale,
+                            cap = StrokeCap.Round,
+                        )
+                        val arrowHead = Path().apply {
+                            if (pointsUp) {
+                                moveTo(size.width / 2f, size.height * 0.10f)
+                                lineTo(size.width * 0.10f, size.height * 0.42f)
+                                lineTo(size.width * 0.90f, size.height * 0.42f)
+                            } else {
+                                moveTo(size.width / 2f, size.height * 0.90f)
+                                lineTo(size.width * 0.10f, size.height * 0.58f)
+                                lineTo(size.width * 0.90f, size.height * 0.58f)
+                            }
+                            close()
+                        }
+                        drawPath(arrowHead, directionTint)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SweetSpotRail(
     state: SweetSpotState,
+    gearGuidance: GearGuidance,
+    uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
     val animatedRpm by animateFloatAsState(
         targetValue = state.currentRpm.toFloat(),
-        animationSpec = tween(220),
+        animationSpec = tween(110),
         label = "sweetSpotTape",
     )
-    Canvas(
+    val animatedSafeFirst by animateIntAsState(
+        targetValue = state.safeRange.first,
+        animationSpec = tween(180),
+        label = "sweetSpotSafeFirst",
+    )
+    val animatedSafeLast by animateIntAsState(
+        targetValue = state.safeRange.last,
+        animationSpec = tween(180),
+        label = "sweetSpotSafeLast",
+    )
+    val animatedWarningFirst by animateIntAsState(
+        targetValue = state.warningRange.first,
+        animationSpec = tween(180),
+        label = "sweetSpotWarningFirst",
+    )
+    val animatedWarningLast by animateIntAsState(
+        targetValue = state.warningRange.last,
+        animationSpec = tween(180),
+        label = "sweetSpotWarningLast",
+    )
+    Box(
         modifier = modifier.semantics {
-            contentDescription = "Przesuwany wskaźnik sweet spot sprzęgła"
+            val gearDescription = gearGuidance.preferredGear
+                ?.let { ", preferowany bieg $it" }
+                .orEmpty()
+            val shiftDescription = when (gearGuidance.shiftDirection) {
+                ShiftDirection.UP -> ", zmień bieg w górę"
+                ShiftDirection.DOWN -> ", zmień bieg w dół"
+                ShiftDirection.NONE -> ""
+            }
+            contentDescription =
+                "Przesuwany wskaźnik sweet spot sprzęgła$gearDescription$shiftDescription"
         },
     ) {
-        drawRect(Color(0xFF0D1215))
-        val trackLeft = 0f
-        val trackRight = size.width - 5.dp.toPx()
-        val trackTop = 0f
-        val trackBottom = size.height
-        val trackWidth = trackRight - trackLeft
-        val trackHeight = trackBottom - trackTop
-        val centerY = size.height / 2f
-        val pixelsPerRpm = trackHeight / 2_550f
-        fun yFor(rpm: Int) = centerY + (animatedRpm - rpm) * pixelsPerRpm
-        fun drawBand(range: IntRange, color: Color) {
-            val top = yFor(range.last).coerceAtLeast(trackTop)
-            val bottom = yFor(range.first).coerceAtMost(trackBottom)
-            if (bottom > top) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(Color(0xFF0D1215))
+            val trackLeft = 0f
+            val trackRight = size.width - 5.dp.toPx()
+            val trackTop = 0f
+            val trackBottom = size.height
+            val trackWidth = trackRight - trackLeft
+            val trackHeight = trackBottom - trackTop
+            val centerY = size.height / 2f
+            val pixelsPerRpm = trackHeight / 2_550f
+            fun yFor(rpm: Int) = centerY + (animatedRpm - rpm) * pixelsPerRpm
+            fun drawBand(range: IntRange, color: Color) {
+                val top = yFor(range.last).coerceAtLeast(trackTop)
+                val bottom = yFor(range.first).coerceAtMost(trackBottom)
+                if (bottom > top) {
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            listOf(
+                                color.copy(alpha = 0.72f),
+                                color,
+                                color.copy(alpha = 0.70f),
+                            ),
+                            startX = trackLeft,
+                            endX = trackRight,
+                        ),
+                        topLeft = Offset(trackLeft, top),
+                        size = Size(trackWidth, bottom - top),
+                    )
+                }
+            }
+
+            clipRect(trackLeft, trackTop, trackRight, trackBottom) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0xFF8E303B), Color(0xFFA63C47), Color(0xFF812A35)),
+                        startY = trackTop,
+                        endY = trackBottom,
+                    ),
+                    topLeft = Offset(trackLeft, trackTop),
+                    size = Size(trackWidth, trackHeight),
+                )
+                drawBand(
+                    animatedWarningFirst..animatedWarningLast,
+                    Color(0xFFB99B59),
+                )
+                drawBand(
+                    animatedSafeFirst..animatedSafeLast,
+                    Color(0xFF3F936D),
+                )
                 drawRect(
                     brush = Brush.horizontalGradient(
                         listOf(
-                            color.copy(alpha = 0.72f),
-                            color,
-                            color.copy(alpha = 0.70f),
+                            Color.Black.copy(alpha = 0.32f),
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.07f),
+                            Color.Black.copy(alpha = 0.22f),
                         ),
                         startX = trackLeft,
                         endX = trackRight,
                     ),
-                    topLeft = Offset(trackLeft, top),
-                    size = Size(trackWidth, bottom - top),
+                    topLeft = Offset(trackLeft, trackTop),
+                    size = Size(trackWidth, trackHeight),
                 )
-            }
-        }
 
-        clipRect(trackLeft, trackTop, trackRight, trackBottom) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    listOf(Color(0xFF8E303B), Color(0xFFA63C47), Color(0xFF812A35)),
-                    startY = trackTop,
-                    endY = trackBottom,
-                ),
-                topLeft = Offset(trackLeft, trackTop),
-                size = Size(trackWidth, trackHeight),
-            )
-            drawBand(state.warningRange, Color(0xFFB99B59))
-            drawBand(state.safeRange, Color(0xFF3F936D))
-            drawRect(
-                brush = Brush.horizontalGradient(
-                    listOf(
-                        Color.Black.copy(alpha = 0.32f),
-                        Color.Transparent,
-                        Color.White.copy(alpha = 0.07f),
-                        Color.Black.copy(alpha = 0.22f),
-                    ),
-                    startX = trackLeft,
-                    endX = trackRight,
-                ),
-                topLeft = Offset(trackLeft, trackTop),
-                size = Size(trackWidth, trackHeight),
-            )
-
-            val visibleMin = animatedRpm.toInt() - 1_450
-            val visibleMax = animatedRpm.toInt() + 1_450
-            val first = floor(visibleMin / 100f).toInt() * 100
-            val last = ceil(visibleMax / 100f).toInt() * 100
-            for (rpm in first..last step 100) {
-                val y = yFor(rpm)
-                if (y in trackTop..trackBottom) {
-                    val major = rpm % 500 == 0
-                    val tickInset = if (major) trackWidth * 0.18f else trackWidth * 0.31f
-                    drawLine(
-                        color = Color.Black.copy(alpha = if (major) 0.42f else 0.22f),
-                        start = Offset(trackLeft + tickInset, y),
-                        end = Offset(trackRight - tickInset, y),
-                        strokeWidth = if (major) 1.5.dp.toPx() else 0.7.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
+                val visibleMin = animatedRpm.toInt() - 1_450
+                val visibleMax = animatedRpm.toInt() + 1_450
+                val first = floor(visibleMin / 100f).toInt() * 100
+                val last = ceil(visibleMax / 100f).toInt() * 100
+                for (rpm in first..last step 100) {
+                    val y = yFor(rpm)
+                    if (y in trackTop..trackBottom) {
+                        val major = rpm % 500 == 0
+                        val tickInset = if (major) trackWidth * 0.18f else trackWidth * 0.31f
+                        drawLine(
+                            color = Color.Black.copy(alpha = if (major) 0.42f else 0.22f),
+                            start = Offset(trackLeft + tickInset, y),
+                            end = Offset(trackRight - tickInset, y),
+                            strokeWidth = if (major) 1.5.dp.toPx() else 0.7.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                    }
                 }
             }
-        }
 
-        drawLine(
-            color = Color.Black.copy(alpha = 0.65f),
-            start = Offset(trackLeft - 2.dp.toPx(), centerY),
-            end = Offset(trackRight + 2.dp.toPx(), centerY),
-            strokeWidth = 8.dp.toPx(),
-            cap = StrokeCap.Square,
-        )
-        drawLine(
-            color = Color.White.copy(alpha = 0.94f),
-            start = Offset(trackLeft - 1.dp.toPx(), centerY),
-            end = Offset(trackRight + 1.dp.toPx(), centerY),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Square,
-        )
-        drawLine(
-            color = Color.White.copy(alpha = 0.10f),
-            start = Offset(size.width - 1.dp.toPx(), 0f),
-            end = Offset(size.width - 1.dp.toPx(), size.height),
-            strokeWidth = 1.dp.toPx(),
+            drawLine(
+                color = Color.Black.copy(alpha = 0.65f),
+                start = Offset(trackLeft - 2.dp.toPx(), centerY),
+                end = Offset(trackRight + 2.dp.toPx(), centerY),
+                strokeWidth = 8.dp.toPx(),
+                cap = StrokeCap.Square,
+            )
+            drawLine(
+                color = Color.White.copy(alpha = 0.94f),
+                start = Offset(trackLeft - 1.dp.toPx(), centerY),
+                end = Offset(trackRight + 1.dp.toPx(), centerY),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Square,
+            )
+            drawLine(
+                color = Color.White.copy(alpha = 0.10f),
+                start = Offset(size.width - 1.dp.toPx(), 0f),
+                end = Offset(size.width - 1.dp.toPx(), size.height),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+        GearRecommendationReadout(
+            guidance = gearGuidance,
+            uiScale = uiScale,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(),
         )
     }
 }
@@ -1433,12 +1973,6 @@ private fun EdgeGlow(
                 ),
                 size = Size(turnDepth, size.height),
             )
-            drawLine(
-                Green.copy(alpha = 0.72f * turnPulse),
-                Offset(1.dp.toPx(), 0f),
-                Offset(1.dp.toPx(), size.height),
-                2.dp.toPx(),
-            )
         }
         if (state.isRightTurnSignalOn) {
             drawRect(
@@ -1454,13 +1988,50 @@ private fun EdgeGlow(
                 topLeft = Offset(size.width - turnDepth, 0f),
                 size = Size(turnDepth, size.height),
             )
+        }
+    }
+}
+
+@Composable
+private fun TurnSignalEdgeStroke(
+    state: VehicleState,
+    turnPulse: Float,
+) {
+    Canvas(Modifier.fillMaxSize()) {
+        if (state.isLeftTurnSignalOn) {
             drawLine(
-                Green.copy(alpha = 0.72f * turnPulse),
-                Offset(size.width - 1.dp.toPx(), 0f),
-                Offset(size.width - 1.dp.toPx(), size.height),
-                2.dp.toPx(),
+                color = Green.copy(alpha = 0.78f * turnPulse),
+                start = Offset(1.dp.toPx(), 0f),
+                end = Offset(1.dp.toPx(), size.height),
+                strokeWidth = 2.dp.toPx(),
             )
         }
+        if (state.isRightTurnSignalOn) {
+            drawLine(
+                color = Green.copy(alpha = 0.78f * turnPulse),
+                start = Offset(size.width - 1.dp.toPx(), 0f),
+                end = Offset(size.width - 1.dp.toPx(), size.height),
+                strokeWidth = 2.dp.toPx(),
+            )
+        }
+    }
+}
+
+private fun steeringGuideTint(strength: Float): Color {
+    val bounded = strength.coerceIn(0f, 1f)
+    return when {
+        bounded <= 0.12f -> Color(0xFF45D8A0)
+        bounded <= 0.70f -> lerp(
+            Color(0xFF45D8A0),
+            Color(0xFFF5C357),
+            (bounded - 0.12f) / 0.58f,
+        )
+
+        else -> lerp(
+            Color(0xFFF5C357),
+            Color(0xFFFF5E6E),
+            (bounded - 0.70f) / 0.30f,
+        )
     }
 }
 

@@ -24,10 +24,10 @@ class PlaceholderVehicleTelemetry(
     companion object {
         val parkedPreviewState = VehicleState(
             speedKph = 0,
-            engineRpm = 2020,
-            fuelLevelPercent = 68,
-            coolantTemperatureCelsius = 86,
-            odometerKm = 238_426,
+            engineRpm = 0,
+            fuelLevelPercent = 0,
+            coolantTemperatureCelsius = 0,
+            odometerKm = 0,
             isParkingBrakeActive = false,
             isDriverSeatBeltWarningActive = false,
             arePositionLightsOn = false,

@@ -46,15 +46,19 @@ class VehicleSignalAdapterTest {
 
         assertEquals(800, result.engineRpm)
         assertEquals(799.75, result.engineRpmPrecise ?: 0.0, 0.0)
+        assertTrue(result.isEngineRpmSignalAvailable)
         assertEquals(12, result.speedKph)
         assertEquals(12.34, result.speedKphPrecise ?: 0.0, 0.0)
+        assertTrue(result.isSpeedSignalAvailable)
         assertEquals(58, result.coolantTemperatureCelsius)
         assertEquals(258_058L, result.odometerKm)
         assertEquals(15.6f, result.steeringWheelAngleDegrees ?: 0f, 0.001f)
         assertEquals(10, result.steeringWheelAngularVelocityRaw)
         assertEquals(100f, result.acceleratorPedalPercent ?: 0f, 0.001f)
         assertTrue(result.isClutchPedalPressed)
+        assertTrue(result.isClutchPedalSignalAvailable)
         assertTrue(result.isBrakePedalPressed)
+        assertTrue(result.isBrakePedalSignalAvailable)
         assertTrue(result.isParkingBrakeActive)
     }
 
@@ -95,6 +99,31 @@ class VehicleSignalAdapterTest {
     }
 
     @Test
+    fun staleDrivingSignalsAreMarkedUnavailableInsteadOfBecomingFalseFacts() {
+        val stale = SignalState(
+            values = mapOf(
+                SignalDefinitions.engineRpmPrimary.id to SignalValue.Number(2_000.0, "rpm"),
+                SignalDefinitions.vehicleSpeedKph.id to SignalValue.Number(50.0, "km/h"),
+                SignalDefinitions.clutchPressed181.id to SignalValue.Bool(false),
+                SignalDefinitions.brakePressed181.id to SignalValue.Bool(false),
+            ),
+            timestampsMs = mapOf(
+                SignalDefinitions.engineRpmPrimary.id to 0L,
+                SignalDefinitions.vehicleSpeedKph.id to 0L,
+                SignalDefinitions.clutchPressed181.id to 0L,
+                SignalDefinitions.brakePressed181.id to 0L,
+            ),
+        )
+
+        val result = adapter.merge(VehicleState(), stale, nowMs = 2_000L)
+
+        assertFalse(result.isEngineRpmSignalAvailable)
+        assertFalse(result.isSpeedSignalAvailable)
+        assertFalse(result.isClutchPedalSignalAvailable)
+        assertFalse(result.isBrakePedalSignalAvailable)
+    }
+
+    @Test
     fun bodySignalsReachTheTypedApi() {
         val signals = stateOf(
             SignalDefinitions.doorFrontLeft to SignalValue.Bool(true),
@@ -132,6 +161,7 @@ class VehicleSignalAdapterTest {
         assertTrue(result.isLeftTurnSignalOn)
         assertFalse(result.isRightTurnSignalOn)
         assertTrue(result.isReverseGearEngaged)
+        assertTrue(result.isReverseGearSignalAvailable)
         assertTrue(result.areDoorsLocked)
         assertTrue(result.isTrunkLocked)
         assertTrue(result.isIgnitionOn)

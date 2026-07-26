@@ -72,6 +72,15 @@ class VehicleSignalAdapter {
             FAST_SIGNAL_MAX_AGE_MS,
         )
         val rpm = rpmPrimary ?: rpmSecondary
+        val rpmTimestampMs = when {
+            rpmPrimary != null ->
+                signals.timestampMs(SignalDefinitions.engineRpmPrimary)
+
+            rpmSecondary != null ->
+                signals.timestampMs(SignalDefinitions.engineRpmSecondary)
+
+            else -> null
+        }
         val rpmSourcesConsistent = when {
             rpmPrimary != null && rpmSecondary != null ->
                 abs(rpmPrimary - rpmSecondary) <= RPM_DISAGREEMENT_THRESHOLD
@@ -80,13 +89,30 @@ class VehicleSignalAdapter {
             else -> placeholder.areRpmSourcesConsistent
         }
 
-        val speed = number(
+        val speedPrimary = number(
             SignalDefinitions.vehicleSpeedKph,
             SPEED_MAX_AGE_MS,
-        ) ?: number(
+        )
+        val speedSecondary = number(
             SignalDefinitions.speedSecondary645,
             SLOW_SIGNAL_MAX_AGE_MS,
         )
+        val speed = speedPrimary ?: speedSecondary
+        val speedTimestampMs = when {
+            speedPrimary != null ->
+                signals.timestampMs(SignalDefinitions.vehicleSpeedKph)
+
+            speedSecondary != null ->
+                signals.timestampMs(SignalDefinitions.speedSecondary645)
+
+            else -> null
+        }
+        val kinematicsSampleTimestampMs =
+            if (rpmTimestampMs != null && speedTimestampMs != null) {
+                minOf(rpmTimestampMs, speedTimestampMs)
+            } else {
+                null
+            }
         val coolantTemperature = number(
             SignalDefinitions.coolantTemperature60D,
             BODY_SIGNAL_MAX_AGE_MS,
@@ -111,12 +137,33 @@ class VehicleSignalAdapter {
                 .coerceIn(0.0, 100.0)
                 .toFloat()
         }
+        val brakeCandidates = listOf(
+            SignalDefinitions.brakePressed181,
+            SignalDefinitions.brakePressed354,
+        ).mapNotNull { boolean(it, SPEED_MAX_AGE_MS) }
+        val brakePressed = brakeCandidates
+            .takeIf { it.isNotEmpty() }
+            ?.any { it }
+        val clutchPressed = boolean(
+            SignalDefinitions.clutchPressed181,
+            FAST_SIGNAL_MAX_AGE_MS,
+        )
+        val reverseCandidates = listOf(
+            SignalDefinitions.reverseGear60D,
+            SignalDefinitions.reverseGear215,
+        ).mapNotNull { boolean(it, BODY_SIGNAL_MAX_AGE_MS) }
+        val reverseEngaged = reverseCandidates
+            .takeIf { it.isNotEmpty() }
+            ?.any { it }
 
         return placeholder.copy(
             speedKph = speed?.roundToInt() ?: placeholder.speedKph,
             speedKphPrecise = speed ?: placeholder.speedKphPrecise,
+            isSpeedSignalAvailable = speed != null,
             engineRpm = rpm?.roundToInt() ?: placeholder.engineRpm,
             engineRpmPrecise = rpm ?: placeholder.engineRpmPrecise,
+            isEngineRpmSignalAvailable = rpm != null,
+            kinematicsSampleTimestampMs = kinematicsSampleTimestampMs,
             areRpmSourcesConsistent = rpmSourcesConsistent,
             coolantTemperatureCelsius =
                 coolantTemperature?.roundToInt()
@@ -217,27 +264,15 @@ class VehicleSignalAdapter {
                     SignalDefinitions.trunkOpen,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: placeholder.isTrunkOpen,
-            isBrakePedalPressed = combinedBoolean(
-                keys = listOf(
-                    SignalDefinitions.brakePressed181,
-                    SignalDefinitions.brakePressed354,
-                ),
-                maxAgeMs = SPEED_MAX_AGE_MS,
-                fallback = placeholder.isBrakePedalPressed,
-            ),
+            isBrakePedalPressed =
+                brakePressed ?: placeholder.isBrakePedalPressed,
+            isBrakePedalSignalAvailable = brakePressed != null,
             isClutchPedalPressed =
-                boolean(
-                    SignalDefinitions.clutchPressed181,
-                    FAST_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isClutchPedalPressed,
-            isReverseGearEngaged = combinedBoolean(
-                keys = listOf(
-                    SignalDefinitions.reverseGear60D,
-                    SignalDefinitions.reverseGear215,
-                ),
-                maxAgeMs = BODY_SIGNAL_MAX_AGE_MS,
-                fallback = placeholder.isReverseGearEngaged,
-            ),
+                clutchPressed ?: placeholder.isClutchPedalPressed,
+            isClutchPedalSignalAvailable = clutchPressed != null,
+            isReverseGearEngaged =
+                reverseEngaged ?: placeholder.isReverseGearEngaged,
+            isReverseGearSignalAvailable = reverseEngaged != null,
             areDoorsLocked =
                 boolean(
                     SignalDefinitions.doorsLocked,

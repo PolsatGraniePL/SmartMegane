@@ -18,6 +18,9 @@ import pl.polsatgranie.smartmegane.data.vehicle.VehicleSignalAdapter
 import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
 import pl.polsatgranie.smartmegane.domain.signal.SignalMapper
 import pl.polsatgranie.smartmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.domain.vehicle.GearAdvisor
+import pl.polsatgranie.smartmegane.domain.vehicle.GearAdvisorInput
+import pl.polsatgranie.smartmegane.domain.vehicle.GearGuidance
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,6 +42,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vehicleSignalAdapter = VehicleSignalAdapter()
     private val parser = WaveshareFrameParser()
     private val signalMapper = SignalMapper(SignalDefinitions.specs)
+    private val gearAdvisor = GearAdvisor()
     private var lastDeviceIds: Set<Int> = emptySet()
     private var lastAutoConnectDeviceId: Int? = null
     private var autoConnectSuppressed = false
@@ -50,6 +54,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val connectionState: StateFlow<UsbConnectionState> = usbDataSource.connectionState
     private val _vehicleState = MutableStateFlow(vehicleTelemetry.state.value)
     val vehicleState: StateFlow<VehicleState> = _vehicleState.asStateFlow()
+    private val _gearGuidance = MutableStateFlow(
+        gearAdvisor.update(
+            input = GearAdvisorInput.from(vehicleTelemetry.state.value),
+            nowMs = monotonicNowMs(),
+        ),
+    )
+    val gearGuidance: StateFlow<GearGuidance> = _gearGuidance.asStateFlow()
 
     init {
         usbDataSource.startMonitoring()
@@ -102,10 +113,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             while (isActive) {
                 delay(SIGNAL_WATCHDOG_INTERVAL_MS)
                 if (connectionState.value is UsbConnectionState.Connected) {
-                    _vehicleState.value = vehicleSignalAdapter.merge(
-                        placeholder = liveSignalFallbackState,
-                        signals = _signalState.value,
-                        nowMs = System.nanoTime() / NANOS_PER_MILLISECOND,
+                    val nowMs = monotonicNowMs()
+                    publishVehicleState(
+                        state = vehicleSignalAdapter.merge(
+                            placeholder = liveSignalFallbackState,
+                            signals = _signalState.value,
+                            nowMs = nowMs,
+                        ),
+                        nowMs = nowMs,
                     )
                 }
             }
@@ -113,7 +128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             connectionState.collect { state ->
                 if (state is UsbConnectionState.Connected) {
-                    _vehicleState.value = liveSignalFallbackState
+                    resetDerivedState(liveSignalFallbackState)
                 }
                 if (state is UsbConnectionState.Disconnected ||
                     state is UsbConnectionState.NoDevice ||
@@ -121,7 +136,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ) {
                     parser.reset()
                     _signalState.value = SignalState()
-                    _vehicleState.value = vehicleTelemetry.state.value
+                    resetDerivedState(vehicleTelemetry.state.value)
                 }
                 if (state is UsbConnectionState.PermissionDenied && lastAutoConnectDeviceId != null) {
                     autoConnectSuppressed = true
@@ -149,6 +164,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         usbDataSource.disconnect()
     }
+
+    private fun publishVehicleState(
+        state: VehicleState,
+        nowMs: Long,
+    ) {
+        _vehicleState.value = state
+        _gearGuidance.value = gearAdvisor.update(
+            input = GearAdvisorInput.from(state),
+            nowMs = nowMs,
+        )
+    }
+
+    private fun resetDerivedState(state: VehicleState) {
+        gearAdvisor.reset()
+        publishVehicleState(
+            state = state,
+            nowMs = monotonicNowMs(),
+        )
+    }
+
+    private fun monotonicNowMs(): Long =
+        System.nanoTime() / NANOS_PER_MILLISECOND
 
     override fun onCleared() {
         usbDataSource.close()
