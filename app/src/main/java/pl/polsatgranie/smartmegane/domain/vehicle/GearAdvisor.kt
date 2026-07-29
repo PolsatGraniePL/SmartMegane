@@ -40,7 +40,14 @@ data class GearGuidance(
     val confidence: Float = 0f,
     val revMatchGear: Int? = null,
     val revMatchConfidence: Float = 0f,
-)
+) {
+    val displayGear: String?
+        get() = if (estimate.status == GearEstimateStatus.REVERSE) {
+            "R"
+        } else {
+            preferredGear?.toString()
+        }
+}
 
 data class GearAdvisorInput(
     val speedKph: Double?,

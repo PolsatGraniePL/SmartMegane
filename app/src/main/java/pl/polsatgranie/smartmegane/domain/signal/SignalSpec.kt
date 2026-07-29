@@ -1,7 +1,7 @@
 package pl.polsatgranie.smartmegane.domain.signal
 
-import pl.polsatgranie.smartmegane.data.can.CanFrame
 import kotlin.math.pow
+import pl.polsatgranie.smartmegane.data.can.CanFrame
 
 sealed interface SignalSpec {
     val key: SignalKey
@@ -16,13 +16,13 @@ data class BitSignalSpec(
     val byteIndex: Int,
     val mask: Int,
     val activeHigh: Boolean = true,
+    val validWhen: (CanFrame) -> Boolean = { true },
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
-        if (byteIndex !in 0 until frame.dlc) return null
-        val value = frame.data.getOrNull(byteIndex)?.toInt()?.and(0xFF) ?: return null
+        if (byteIndex !in 0 until frame.dlc || !validWhen(frame)) return null
+        val value = frame.data[byteIndex].toInt() and 0xFF
         val isSet = value and mask != 0
-        val result = if (activeHigh) isSet else !isSet
-        return SignalValue.Bool(result)
+        return SignalValue.Bool(if (activeHigh) isSet else !isSet)
     }
 }
 
@@ -33,13 +33,13 @@ data class EnumSignalSpec(
     val mask: Int,
     val shift: Int,
     val mapping: Map<Int, String>,
+    val validWhen: (CanFrame) -> Boolean = { true },
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
-        if (byteIndex !in 0 until frame.dlc) return null
-        val value = frame.data.getOrNull(byteIndex)?.toInt()?.and(0xFF) ?: return null
-        val code = (value and mask) shr shift
-        val label = mapping[code] ?: "Unknown($code)"
-        return SignalValue.Enum(code, label)
+        if (byteIndex !in 0 until frame.dlc || !validWhen(frame)) return null
+        val value = frame.data[byteIndex].toInt() and 0xFF
+        val code = (value and mask) ushr shift
+        return SignalValue.Enum(code, mapping[code] ?: "Unknown($code)")
     }
 }
 
@@ -53,13 +53,14 @@ data class IntSignalSpec(
     val scale: Double = 1.0,
     val offset: Double = 0.0,
     val unit: String? = null,
+    val validWhen: (CanFrame) -> Boolean = { true },
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
         if (length <= 0 || startByte < 0 || startByte + length > frame.dlc) return null
+        if (!validWhen(frame)) return null
         val raw = readUnsigned(frame.data, startByte, length, littleEndian)
-        val signedValue = if (signed) signExtend(raw, length * 8) else raw.toLong()
-        val scaled = signedValue * scale + offset
-        return SignalValue.Number(scaled, unit)
+        val signedValue = if (signed) signExtend(raw, length * 8) else raw
+        return SignalValue.Number(signedValue * scale + offset, unit)
     }
 
     private fun signExtend(value: Long, bits: Int): Long {
@@ -86,11 +87,13 @@ data class BigEndianBitFieldSignalSpec(
     val scale: Double = 1.0,
     val offset: Double = 0.0,
     val unit: String? = null,
+    val validWhen: (CanFrame) -> Boolean = { true },
 ) : SignalSpec {
     override fun decode(frame: CanFrame): SignalValue? {
         if (startBit < 0 || length !in 1..63 || startBit + length > frame.dlc * 8) {
             return null
         }
+        if (!validWhen(frame)) return null
 
         var raw = 0L
         for (bitOffset in 0 until length) {
@@ -104,13 +107,55 @@ data class BigEndianBitFieldSignalSpec(
     }
 }
 
+data class MaskedIntSignalSpec(
+    override val key: SignalKey,
+    override val canId: Int,
+    val byteIndex: Int,
+    val mask: Int,
+    val shift: Int = 0,
+    val scale: Double = 1.0,
+    val offset: Double = 0.0,
+    val unit: String? = null,
+    val validWhen: (CanFrame) -> Boolean = { true },
+) : SignalSpec {
+    override fun decode(frame: CanFrame): SignalValue? {
+        if (byteIndex !in 0 until frame.dlc || !validWhen(frame)) return null
+        val byte = frame.data[byteIndex].toInt() and 0xFF
+        val raw = (byte and mask) ushr shift
+        return SignalValue.Number(raw * scale + offset, unit)
+    }
+}
+
+data class MaskedBoolSignalSpec(
+    override val key: SignalKey,
+    override val canId: Int,
+    val byteIndex: Int,
+    val mask: Int,
+    val expectedValue: Int,
+    val validWhen: (CanFrame) -> Boolean = { true },
+) : SignalSpec {
+    override fun decode(frame: CanFrame): SignalValue? {
+        if (byteIndex !in 0 until frame.dlc || !validWhen(frame)) return null
+        val byte = frame.data[byteIndex].toInt() and 0xFF
+        return SignalValue.Bool(byte and mask == expectedValue)
+    }
+}
+
 fun bitSignal(
     key: SignalKey,
     canId: Int,
     byteIndex: Int,
     mask: Int,
     activeHigh: Boolean = true,
-): SignalSpec = BitSignalSpec(key, canId, byteIndex, mask, activeHigh)
+    validWhen: (CanFrame) -> Boolean = { true },
+): SignalSpec = BitSignalSpec(
+    key = key,
+    canId = canId,
+    byteIndex = byteIndex,
+    mask = mask,
+    activeHigh = activeHigh,
+    validWhen = validWhen,
+)
 
 fun enumSignal(
     key: SignalKey,
@@ -119,7 +164,16 @@ fun enumSignal(
     mask: Int,
     shift: Int,
     mapping: Map<Int, String>,
-): SignalSpec = EnumSignalSpec(key, canId, byteIndex, mask, shift, mapping)
+    validWhen: (CanFrame) -> Boolean = { true },
+): SignalSpec = EnumSignalSpec(
+    key = key,
+    canId = canId,
+    byteIndex = byteIndex,
+    mask = mask,
+    shift = shift,
+    mapping = mapping,
+    validWhen = validWhen,
+)
 
 fun intSignal(
     key: SignalKey,
@@ -131,6 +185,7 @@ fun intSignal(
     scale: Double = 1.0,
     offset: Double = 0.0,
     unit: String? = null,
+    validWhen: (CanFrame) -> Boolean = { true },
 ): SignalSpec = IntSignalSpec(
     key = key,
     canId = canId,
@@ -141,6 +196,7 @@ fun intSignal(
     scale = scale,
     offset = offset,
     unit = unit,
+    validWhen = validWhen,
 )
 
 fun bigEndianBitFieldSignal(
@@ -151,6 +207,7 @@ fun bigEndianBitFieldSignal(
     scale: Double = 1.0,
     offset: Double = 0.0,
     unit: String? = null,
+    validWhen: (CanFrame) -> Boolean = { true },
 ): SignalSpec = BigEndianBitFieldSignalSpec(
     key = key,
     canId = canId,
@@ -159,6 +216,45 @@ fun bigEndianBitFieldSignal(
     scale = scale,
     offset = offset,
     unit = unit,
+    validWhen = validWhen,
+)
+
+fun maskedIntSignal(
+    key: SignalKey,
+    canId: Int,
+    byteIndex: Int,
+    mask: Int,
+    shift: Int = 0,
+    scale: Double = 1.0,
+    offset: Double = 0.0,
+    unit: String? = null,
+    validWhen: (CanFrame) -> Boolean = { true },
+): SignalSpec = MaskedIntSignalSpec(
+    key = key,
+    canId = canId,
+    byteIndex = byteIndex,
+    mask = mask,
+    shift = shift,
+    scale = scale,
+    offset = offset,
+    unit = unit,
+    validWhen = validWhen,
+)
+
+fun maskedBoolSignal(
+    key: SignalKey,
+    canId: Int,
+    byteIndex: Int,
+    mask: Int,
+    expectedValue: Int,
+    validWhen: (CanFrame) -> Boolean = { true },
+): SignalSpec = MaskedBoolSignalSpec(
+    key = key,
+    canId = canId,
+    byteIndex = byteIndex,
+    mask = mask,
+    expectedValue = expectedValue,
+    validWhen = validWhen,
 )
 
 private fun readUnsigned(
@@ -171,7 +267,7 @@ private fun readUnsigned(
     val indices = if (littleEndian) {
         (startByte until startByte + length).reversed()
     } else {
-        (startByte until startByte + length)
+        startByte until startByte + length
     }
     for (index in indices) {
         result = (result shl 8) or (data[index].toInt() and 0xFF).toLong()

@@ -28,8 +28,8 @@ data class VehicleState(
     val engineRpmPrecise: Double? = null,
     val isEngineRpmSignalAvailable: Boolean = false,
     val kinematicsSampleTimestampMs: Long? = null,
-    val areRpmSourcesConsistent: Boolean = true,
     val fuelLevelPercent: Int = 0,
+    val fuelLevelRaw: Int? = null,
     val coolantTemperatureCelsius: Int = 0,
     val outsideTemperatureCelsius: Int? = null,
     val odometerKm: Long = 0,
@@ -38,6 +38,24 @@ data class VehicleState(
     val vehicleAgeMinutes: Long? = null,
     val acceleratorPedalPercent: Float? = null,
     val requestedEngineTorqueNm: Int? = null,
+    val isEngineRunning: Boolean = false,
+    val isEngineDataValid: Boolean = false,
+    val isSteeringDataValid: Boolean = false,
+    val isClusterNetworkActive: Boolean = false,
+    val isRearDefrostOn: Boolean = false,
+    val isEspAsrDisabled: Boolean = false,
+    val isAsrEspButtonPressed: Boolean = false,
+    val wheelPairAFirstRaw: Int? = null,
+    val wheelPairASecondRaw: Int? = null,
+    val wheelPairBFirstRaw: Int? = null,
+    val wheelPairBSecondRaw: Int? = null,
+    val yawSensorRaw: Int? = null,
+    val inertialAxisARaw: Int? = null,
+    val inertialAxisBRaw: Int? = null,
+    val bodySensorRaw: Int? = null,
+    val bodyStatusRaw: Int? = null,
+    val serviceStatusRaw: Int? = null,
+    val odometerStatusRaw: Int? = null,
     val isStopWarningActive: Boolean = false,
     val isOilPressureWarningActive: Boolean = false,
     val isCoolantOverheatWarningActive: Boolean = false,
@@ -134,7 +152,7 @@ fun VehicleState.isActive(indicator: VehicleIndicator): Boolean =
         VehicleIndicator.SERVICE -> isServiceWarningActive
         VehicleIndicator.ENGINE -> isEngineWarningActive
         VehicleIndicator.ABS -> isAbsWarningActive
-        VehicleIndicator.ESP -> isEspWarningActive
+        VehicleIndicator.ESP -> isEspWarningActive || isEspAsrDisabled
         VehicleIndicator.LOW_FUEL -> isLowFuelWarningActive
         VehicleIndicator.GLOW_PLUG -> isGlowPlugActive
         VehicleIndicator.SEAT_BELT -> isDriverSeatBeltWarningActive

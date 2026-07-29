@@ -50,7 +50,12 @@ class IntSignalSpecTest {
         val spec = SignalDefinitions.specs.single {
             it.key == SignalDefinitions.wipersMode
         }
-        listOf(0x00, 0x40, 0x80, 0xC0).forEachIndexed { expected, byte ->
+        mapOf(
+            0x00 to 0,
+            0x20 to 1,
+            0xC0 to 6,
+            0xE0 to 7,
+        ).forEach { (byte, expected) ->
             val frame = CanFrame(
                 id = spec.canId,
                 dlc = 8,

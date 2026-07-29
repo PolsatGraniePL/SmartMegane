@@ -180,6 +180,7 @@ class UsbSerialDataSource(
                 Log.w(TAG, "USB permission denied for ${device.deviceName}")
                 return
             }
+            _connectionState.value = UsbConnectionState.Searching
         }
         val connection = usbManager.openDevice(device)
         if (connection == null) {
@@ -210,9 +211,12 @@ class UsbSerialDataSource(
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     if (intent.action != action) return
+                    val resultDevice =
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                    if (resultDevice?.deviceId != device.deviceId) return
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     runCatching { context.unregisterReceiver(this) }
-                    cont.resume(granted)
+                    if (cont.isActive) cont.resume(granted)
                 }
             }
             val filter = IntentFilter(action)
@@ -220,11 +224,14 @@ class UsbSerialDataSource(
                 context,
                 receiver,
                 filter,
-                ContextCompat.RECEIVER_NOT_EXPORTED,
+                // UsbManager sends the PendingIntent result from the Android
+                // system process. With targetSdk 35 a NOT_EXPORTED receiver can
+                // miss that callback even though the permission was granted.
+                ContextCompat.RECEIVER_EXPORTED,
             )
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
-                0,
+                device.deviceId,
                 Intent(action).setPackage(context.packageName),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )

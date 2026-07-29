@@ -16,13 +16,16 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -45,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +68,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -71,8 +76,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
+import pl.polsatgranie.smartmegane.domain.vehicle.GearEstimateStatus
 import pl.polsatgranie.smartmegane.domain.vehicle.IndicatorSeverity
 import pl.polsatgranie.smartmegane.domain.vehicle.GearGuidance
 import pl.polsatgranie.smartmegane.domain.vehicle.ShiftDirection
@@ -103,6 +111,18 @@ private const val STEERING_VISIBILITY_TIMEOUT_MS = 5_000L
 private const val STEERING_DISPLAY_STEP_DEGREES = 2.5f
 private const val MAX_STEERING_WHEEL_ANGLE_DEGREES = 576f
 private const val MAX_ROAD_WHEEL_ANGLE_DEGREES = 32f
+private const val TAB_TITLE_VISIBLE_MS = 1_800L
+private const val STALK_DOUBLE_CLICK_MS = 310L
+
+private enum class DashboardTab(val title: String) {
+    AUTOMATIC("Automat"),
+    VEHICLE("Auto"),
+    SPEED("Prędkość"),
+    DRIVETRAIN("Napęd"),
+    CHASSIS("Podwozie"),
+    BODY("Nadwozie"),
+    TRIP("Podróż"),
+}
 
 @Composable
 fun CockpitScreen(
@@ -112,6 +132,45 @@ fun CockpitScreen(
     onReconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var selectedTab by remember { mutableStateOf(DashboardTab.AUTOMATIC) }
+    var navigationDirection by remember { mutableStateOf(1) }
+    var tabTitleVisible by remember { mutableStateOf(true) }
+    val stalkScope = rememberCoroutineScope()
+    var pendingStalkClick by remember { mutableStateOf<Job?>(null) }
+    var stalkWasPressed by remember { mutableStateOf(false) }
+    val changeTab: (Int) -> Unit = { delta ->
+        val tabs = DashboardTab.entries
+        val currentIndex = selectedTab.ordinal
+        navigationDirection = if (delta >= 0) 1 else -1
+        selectedTab = tabs[(currentIndex + delta + tabs.size) % tabs.size]
+    }
+    val stalkPressed =
+        vehicleState.isTripComputerUpPressed ||
+            vehicleState.isTripComputerDownPressed
+
+    LaunchedEffect(selectedTab) {
+        tabTitleVisible = true
+        delay(TAB_TITLE_VISIBLE_MS)
+        tabTitleVisible = false
+    }
+    LaunchedEffect(stalkPressed) {
+        if (stalkPressed && !stalkWasPressed) {
+            val pending = pendingStalkClick
+            if (pending?.isActive == true) {
+                pending.cancel()
+                pendingStalkClick = null
+                changeTab(-1)
+            } else {
+                pendingStalkClick = stalkScope.launch {
+                    delay(STALK_DOUBLE_CLICK_MS)
+                    changeTab(1)
+                    pendingStalkClick = null
+                }
+            }
+        }
+        stalkWasPressed = stalkPressed
+    }
+
     val transition = rememberInfiniteTransition(label = "dashboardPulse")
     val turnPulse by transition.animateFloat(
         initialValue = 0f,
@@ -180,15 +239,55 @@ fun CockpitScreen(
                 pulse = turnPulse,
                 uiScale = uiScale,
             )
-            PrimaryReadout(
-                state = vehicleState,
-                uiScale = uiScale,
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    val direction = navigationDirection
+                    (
+                        fadeIn(tween(210)) +
+                            slideInHorizontally(tween(260)) {
+                                direction * it / 3
+                            }
+                        ).togetherWith(
+                        fadeOut(tween(155)) +
+                            slideOutHorizontally(tween(220)) {
+                                -direction * it / 3
+                            },
+                    )
+                },
+                contentAlignment = Alignment.Center,
+                label = "dashboardTabs",
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-            )
-            WarningTray(
-                state = vehicleState,
+                    .fillMaxWidth()
+                    .pointerInput(selectedTab) {
+                        var horizontalDrag = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { horizontalDrag = 0f },
+                            onHorizontalDrag = { _, dragAmount ->
+                                horizontalDrag += dragAmount
+                            },
+                            onDragCancel = { horizontalDrag = 0f },
+                            onDragEnd = {
+                                val threshold = size.width * 0.14f
+                                when {
+                                    horizontalDrag <= -threshold -> changeTab(1)
+                                    horizontalDrag >= threshold -> changeTab(-1)
+                                }
+                                horizontalDrag = 0f
+                            },
+                        )
+                    },
+            ) { tab ->
+                DashboardTabContent(
+                    tab = tab,
+                    state = vehicleState,
+                    uiScale = uiScale,
+                )
+            }
+            DashboardTabTitle(
+                selectedTab = selectedTab,
+                visible = tabTitleVisible,
                 uiScale = uiScale,
             )
             BottomTelemetry(
@@ -369,6 +468,633 @@ private fun SignalIcon(
 }
 
 @Composable
+private fun DashboardTabContent(
+    tab: DashboardTab,
+    state: VehicleState,
+    uiScale: Float,
+) {
+    val showsWarningTray =
+        tab == DashboardTab.AUTOMATIC ||
+            tab == DashboardTab.VEHICLE ||
+            tab == DashboardTab.SPEED
+    Column(Modifier.fillMaxSize()) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) {
+            when (tab) {
+                DashboardTab.AUTOMATIC ->
+                    PrimaryReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.VEHICLE ->
+                    VehicleDetailReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.SPEED ->
+                    SpeedValueReadout(
+                        speedKph = state.speedKph,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.DRIVETRAIN ->
+                    DrivetrainReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.CHASSIS ->
+                    ChassisReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.BODY ->
+                    BodyReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.TRIP ->
+                    TripReadout(
+                        state = state,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+            }
+        }
+        if (showsWarningTray) {
+            WarningTray(
+                state = state,
+                uiScale = uiScale,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DashboardTabTitle(
+    selectedTab: DashboardTab,
+    visible: Boolean,
+    uiScale: Float,
+) {
+    val tabs = DashboardTab.entries
+    val previous = tabs[(selectedTab.ordinal - 1 + tabs.size) % tabs.size]
+    val next = tabs[(selectedTab.ordinal + 1) % tabs.size]
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height((19f * uiScale).dp),
+    ) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(420)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TabTitleText(
+                    text = previous.title,
+                    selected = false,
+                    uiScale = uiScale,
+                    modifier = Modifier.weight(1f),
+                )
+                TabTitleText(
+                    text = selectedTab.title,
+                    selected = true,
+                    uiScale = uiScale,
+                    modifier = Modifier.weight(1f),
+                )
+                TabTitleText(
+                    text = next.title,
+                    selected = false,
+                    uiScale = uiScale,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabTitleText(
+    text: String,
+    selected: Boolean,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier,
+    ) {
+        Text(
+            text = text.uppercase(Locale.getDefault()),
+            color = Ink.copy(alpha = if (selected) 0.58f else 0.16f),
+            fontSize = ((if (selected) 8.2f else 6.7f) * uiScale).sp,
+            lineHeight = (9f * uiScale).sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            letterSpacing = ((if (selected) 1.15f else 0.65f) * uiScale).sp,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun VehicleDetailReadout(
+    state: VehicleState,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier.padding(horizontal = (5f * uiScale).dp),
+    ) {
+        VehicleStatusSymbol(
+            state = state,
+            modifier = Modifier
+                .fillMaxHeight(0.88f)
+                .aspectRatio(0.55f),
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy((16f * uiScale).dp),
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) {
+            DetailMetric(
+                label = "OBROTY",
+                value = state.engineRpmPrecise
+                    ?.let { "${formatOneDecimal(it)} rpm" }
+                    ?: "${state.engineRpm} rpm",
+                tint = Ink,
+                uiScale = uiScale,
+            )
+            DetailMetric(
+                label = "PALIWO RAW",
+                value = state.fuelLevelRaw?.toString() ?: "—",
+                tint = Amber,
+                uiScale = uiScale,
+            )
+            DetailMetric(
+                label = "PRĘDKOŚĆ",
+                value = state.speedKphPrecise
+                    ?.let { "${formatTwoDecimals(it)} km/h" }
+                    ?: "${state.speedKph} km/h",
+                tint = Ink,
+                uiScale = uiScale,
+            )
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy((16f * uiScale).dp),
+            modifier = Modifier.align(Alignment.CenterEnd),
+        ) {
+            DetailMetric(
+                label = "SILNIK",
+                value = "${state.coolantTemperatureCelsius}°C",
+                tint = if (state.coolantTemperatureCelsius >= 105) Red else Blue,
+                uiScale = uiScale,
+                alignEnd = true,
+            )
+            DetailMetric(
+                label = "ZEWNĄTRZ",
+                value = state.outsideTemperatureCelsius
+                    ?.let { "$it°C" }
+                    ?: "—",
+                tint = Blue,
+                uiScale = uiScale,
+                alignEnd = true,
+            )
+            DetailMetric(
+                label = "KIEROWNICA",
+                value = state.steeringWheelAngleDegrees
+                    ?.let { "${formatOneDecimal(it.toDouble())}°" }
+                    ?: "—",
+                tint = steeringTint(state.steeringWheelAngleDegrees),
+                uiScale = uiScale,
+                alignEnd = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeedValueReadout(
+    speedKph: Int,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val displayedSpeed by animateIntAsState(
+        targetValue = speedKph,
+        animationSpec = tween(135),
+        label = "forcedSpeed",
+    )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier,
+    ) {
+        Text(
+            text = displayedSpeed.toString(),
+            style = TextStyle(
+                brush = Brush.verticalGradient(
+                    listOf(
+                        Color.White,
+                        Color(0xFFB9C3C7),
+                    ),
+                ),
+                fontFamily = FontFamily.SansSerif,
+                fontSize = (112f * uiScale).sp,
+                lineHeight = (112f * uiScale).sp,
+                fontWeight = FontWeight.Thin,
+                letterSpacing = (-5f * uiScale).sp,
+                fontFeatureSettings = "tnum",
+            ),
+        )
+        Text(
+            text = "km/h",
+            color = Muted.copy(alpha = 0.52f),
+            fontSize = (10.5f * uiScale).sp,
+            lineHeight = (11f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = (1.1f * uiScale).sp,
+            modifier = Modifier.graphicsLayer {
+                translationY = -(5f * uiScale).dp.toPx()
+            },
+        )
+    }
+}
+
+@Composable
+private fun DrivetrainReadout(
+    state: VehicleState,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(horizontal = (9f * uiScale).dp),
+    ) {
+        Text(
+            text = state.engineRpm.toString(),
+            color = Ink,
+            fontSize = (48f * uiScale).sp,
+            lineHeight = (50f * uiScale).sp,
+            fontWeight = FontWeight.Light,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+        )
+        Text(
+            text = "rpm",
+            color = Muted.copy(alpha = 0.52f),
+            fontSize = (8f * uiScale).sp,
+            letterSpacing = (1f * uiScale).sp,
+        )
+        Spacer(Modifier.height((12f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric(
+                label = "GAZ",
+                value = state.acceleratorPedalPercent
+                    ?.let { "${it.roundToInt()}%" }
+                    ?: "—",
+                tint = Green,
+                uiScale = uiScale,
+            )
+            DetailMetric(
+                label = "MOMENT",
+                value = state.requestedEngineTorqueNm
+                    ?.let { "$it Nm" }
+                    ?: "—",
+                tint = Amber,
+                uiScale = uiScale,
+            )
+            DetailMetric(
+                label = "PRĘDKOŚĆ",
+                value = state.speedKphPrecise
+                    ?.let { formatTwoDecimals(it) }
+                    ?: state.speedKph.toString(),
+                tint = Ink,
+                uiScale = uiScale,
+            )
+        }
+        Spacer(Modifier.height((13f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            InlineState(
+                label = "SILNIK",
+                active = state.isEngineRunning,
+                uiScale = uiScale,
+            )
+            InlineState(
+                label = "SPRZĘGŁO",
+                active = state.isClutchPedalPressed,
+                uiScale = uiScale,
+            )
+            InlineState(
+                label = "HAMULEC",
+                active = state.isBrakePedalPressed,
+                uiScale = uiScale,
+            )
+            InlineState(
+                label = "WSTECZNY",
+                active = state.isReverseGearEngaged,
+                uiScale = uiScale,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChassisReadout(
+    state: VehicleState,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(horizontal = (8f * uiScale).dp),
+    ) {
+        Text(
+            text = state.steeringWheelAngleDegrees
+                ?.let { "${formatOneDecimal(it.toDouble())}°" }
+                ?: "—",
+            color = steeringTint(state.steeringWheelAngleDegrees),
+            fontSize = (36f * uiScale).sp,
+            lineHeight = (38f * uiScale).sp,
+            fontWeight = FontWeight.Light,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+        )
+        Text(
+            text = "KĄT KIEROWNICY",
+            color = Muted.copy(alpha = 0.52f),
+            fontSize = (7f * uiScale).sp,
+            letterSpacing = (1f * uiScale).sp,
+        )
+        Spacer(Modifier.height((13f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric("KOŁO A1", raw(state.wheelPairAFirstRaw), Ink, uiScale)
+            DetailMetric("KOŁO A2", raw(state.wheelPairASecondRaw), Ink, uiScale)
+            DetailMetric("KOŁO B1", raw(state.wheelPairBFirstRaw), Ink, uiScale)
+            DetailMetric("KOŁO B2", raw(state.wheelPairBSecondRaw), Ink, uiScale)
+        }
+        Spacer(Modifier.height((14f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric("YAW RAW", raw(state.yawSensorRaw), Blue, uiScale)
+            DetailMetric("OŚ A", raw(state.inertialAxisARaw), Blue, uiScale)
+            DetailMetric("OŚ B", raw(state.inertialAxisBRaw), Blue, uiScale)
+            InlineState("ESP OFF", state.isEspAsrDisabled, uiScale)
+        }
+    }
+}
+
+@Composable
+private fun BodyReadout(
+    state: VehicleState,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val openDoorCount = listOf(
+        state.isFrontLeftDoorOpen,
+        state.isFrontRightDoorOpen,
+        state.isRearLeftDoorOpen,
+        state.isRearRightDoorOpen,
+    ).count { it }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier.padding(horizontal = (7f * uiScale).dp),
+    ) {
+        VehicleStatusSymbol(
+            state = state,
+            modifier = Modifier
+                .fillMaxHeight(0.80f)
+                .aspectRatio(0.55f),
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy((15f * uiScale).dp),
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) {
+            DetailMetric(
+                "DRZWI",
+                if (openDoorCount == 0) "zamknięte" else "otwarte $openDoorCount",
+                if (openDoorCount == 0) Green else Amber,
+                uiScale,
+            )
+            DetailMetric(
+                "ZAMKI",
+                if (state.areDoorsLocked) "zamknięte" else "otwarte",
+                if (state.areDoorsLocked) Green else Amber,
+                uiScale,
+            )
+            DetailMetric(
+                "KLAPA",
+                if (state.isTrunkOpen) "otwarta" else "zamknięta",
+                if (state.isTrunkOpen) Amber else Green,
+                uiScale,
+            )
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy((15f * uiScale).dp),
+            modifier = Modifier.align(Alignment.CenterEnd),
+        ) {
+            DetailMetric(
+                "ZAPŁON",
+                if (state.isIgnitionOn) "RUN" else "OFF",
+                if (state.isIgnitionOn) Green else Muted,
+                uiScale,
+                alignEnd = true,
+            )
+            DetailMetric(
+                "TYLNA SZYBA",
+                if (state.isRearDefrostOn) "ON" else "OFF",
+                if (state.isRearDefrostOn) Blue else Muted,
+                uiScale,
+                alignEnd = true,
+            )
+            DetailMetric(
+                "PAS",
+                if (state.isDriverSeatBeltWarningActive) "niezapięty" else "OK",
+                if (state.isDriverSeatBeltWarningActive) Amber else Green,
+                uiScale,
+                alignEnd = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TripReadout(
+    state: VehicleState,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val distanceText = state.distanceSinceStartMeters?.let { distance ->
+        if (distance >= 1_000.0) {
+            "${formatTwoDecimals(distance / 1_000.0)} km"
+        } else {
+            "${distance.roundToInt()} m"
+        }
+    } ?: "—"
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(horizontal = (9f * uiScale).dp),
+    ) {
+        Text(
+            text = distanceText,
+            color = Ink,
+            fontSize = (34f * uiScale).sp,
+            lineHeight = (36f * uiScale).sp,
+            fontWeight = FontWeight.Light,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+        )
+        Text(
+            text = "OD URUCHOMIENIA",
+            color = Muted.copy(alpha = 0.52f),
+            fontSize = (7f * uiScale).sp,
+            letterSpacing = (1f * uiScale).sp,
+        )
+        Spacer(Modifier.height((16f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric(
+                "PALIWO",
+                state.fuelUsedSinceStartLiters
+                    ?.let { "${formatFourDecimals(it)} L" }
+                    ?: "—",
+                Amber,
+                uiScale,
+            )
+            DetailMetric(
+                "PRZEBIEG",
+                "${formatOdometer(state.odometerKm)} km",
+                Ink,
+                uiScale,
+            )
+            DetailMetric(
+                "CZAS POJAZDU",
+                state.vehicleAgeMinutes
+                    ?.let { "${formatOdometer(it / 60)} h" }
+                    ?: "—",
+                Ink,
+                uiScale,
+            )
+        }
+        Spacer(Modifier.height((15f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric(
+                "ZEWNĄTRZ",
+                state.outsideTemperatureCelsius?.let { "$it°C" } ?: "—",
+                Blue,
+                uiScale,
+            )
+            DetailMetric(
+                "SILNIK",
+                "${state.coolantTemperatureCelsius}°C",
+                if (state.coolantTemperatureCelsius >= 105) Red else Blue,
+                uiScale,
+            )
+            DetailMetric(
+                "SERWIS RAW",
+                raw(state.serviceStatusRaw),
+                Muted,
+                uiScale,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DetailMetric(
+    label: String,
+    value: String,
+    tint: Color,
+    uiScale: Float,
+    alignEnd: Boolean = false,
+) {
+    Column(
+        horizontalAlignment =
+            if (alignEnd) Alignment.End else Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = label,
+            color = Muted.copy(alpha = 0.46f),
+            fontSize = (6.3f * uiScale).sp,
+            lineHeight = (7f * uiScale).sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = (0.65f * uiScale).sp,
+            maxLines = 1,
+        )
+        Text(
+            text = value,
+            color = tint.copy(alpha = 0.88f),
+            fontSize = (10.5f * uiScale).sp,
+            lineHeight = (12f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun InlineState(
+    label: String,
+    active: Boolean,
+    uiScale: Float,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy((3.5f * uiScale).dp),
+    ) {
+        Canvas(Modifier.size((4.5f * uiScale).dp)) {
+            drawCircle(
+                color = if (active) Green else Muted.copy(alpha = 0.24f),
+            )
+        }
+        Text(
+            text = label,
+            color = Ink.copy(alpha = if (active) 0.76f else 0.30f),
+            fontSize = (6.5f * uiScale).sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = (0.45f * uiScale).sp,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun PrimaryReadout(
     state: VehicleState,
     uiScale: Float,
@@ -383,12 +1109,6 @@ private fun PrimaryReadout(
             showVehicle = false
         }
     }
-    val displayedSpeed by animateIntAsState(
-        targetValue = state.speedKph,
-        animationSpec = tween(135),
-        label = "speed",
-    )
-
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier,
@@ -412,39 +1132,11 @@ private fun PrimaryReadout(
                         .aspectRatio(0.55f),
                 )
             } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        text = displayedSpeed.toString(),
-                        style = TextStyle(
-                            brush = Brush.verticalGradient(
-                                listOf(
-                                    Color.White,
-                                    Color(0xFFB9C3C7),
-                                ),
-                            ),
-                            fontFamily = FontFamily.SansSerif,
-                            fontSize = (112f * uiScale).sp,
-                            lineHeight = (112f * uiScale).sp,
-                            fontWeight = FontWeight.Thin,
-                            letterSpacing = (-5f * uiScale).sp,
-                            fontFeatureSettings = "tnum",
-                        ),
-                    )
-                    Text(
-                        text = "km/h",
-                        color = Muted.copy(alpha = 0.52f),
-                        fontSize = (10.5f * uiScale).sp,
-                        lineHeight = (11f * uiScale).sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = (1.1f * uiScale).sp,
-                        modifier = Modifier.graphicsLayer {
-                            translationY = -(5f * uiScale).dp.toPx()
-                        },
-                    )
-                }
+                SpeedValueReadout(
+                    speedKph = state.speedKph,
+                    uiScale = uiScale,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
@@ -1455,14 +2147,34 @@ private fun BottomTelemetry(
             .fillMaxWidth()
             .height((48f * uiScale).dp),
     ) {
-        Text(
-            text = "${formatOdometer(state.odometerKm)} km",
-            color = Ink.copy(alpha = 0.38f),
-            fontSize = (9.5f * uiScale).sp,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = (0.35f * uiScale).sp,
-            style = TextStyle(fontFeatureSettings = "tnum"),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "${formatOdometer(state.odometerKm)} km",
+                color = Ink.copy(alpha = 0.38f),
+                fontSize = (9.5f * uiScale).sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = (0.35f * uiScale).sp,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+            )
+            state.outsideTemperatureCelsius?.let { temperature ->
+                Text(
+                    text = "$temperature°C",
+                    color = Ink.copy(alpha = 0.38f),
+                    fontSize = (9.5f * uiScale).sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = (0.35f * uiScale).sp,
+                    style = TextStyle(fontFeatureSettings = "tnum"),
+                    modifier = Modifier.semantics {
+                        contentDescription =
+                            "Temperatura zewnętrzna $temperature stopni Celsjusza"
+                    },
+                )
+            }
+        }
         Spacer(Modifier.height((6f * uiScale).dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1620,8 +2332,9 @@ private fun GearRecommendationReadout(
             lastShiftDirection = guidance.shiftDirection
         }
     }
-    val displayedGear =
-        guidance.preferredGear ?: lastPreferredGear ?: 1
+    val displayedGear = guidance.displayGear
+        ?: lastPreferredGear?.toString()
+        ?: "1"
     val displayedDirection =
         guidance.shiftDirection.takeUnless { it == ShiftDirection.NONE }
             ?: lastShiftDirection
@@ -1639,7 +2352,7 @@ private fun GearRecommendationReadout(
         label = "gearArrowPresence",
     )
     AnimatedVisibility(
-        visible = guidance.preferredGear != null,
+        visible = guidance.displayGear != null,
         enter = fadeIn(tween(150)) + scaleIn(tween(170), initialScale = 0.92f),
         exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.96f),
         modifier = modifier,
@@ -1671,7 +2384,9 @@ private fun GearRecommendationReadout(
                     targetState = displayedGear,
                     contentAlignment = Alignment.Center,
                     transitionSpec = {
-                        val increasing = targetState > initialState
+                        val increasing =
+                            (targetState.toIntOrNull() ?: 0) >
+                                (initialState.toIntOrNull() ?: 0)
                         (
                             fadeIn(tween(140)) +
                                 slideInVertically(tween(160)) {
@@ -1688,7 +2403,7 @@ private fun GearRecommendationReadout(
                     modifier = Modifier.width((18f * uiScale).dp),
                 ) { gear ->
                     Text(
-                        text = gear.toString(),
+                        text = gear,
                         color = Ink,
                         fontSize = (24f * uiScale).sp,
                         lineHeight = (26f * uiScale).sp,
@@ -1785,9 +2500,15 @@ private fun SweetSpotRail(
     )
     Box(
         modifier = modifier.semantics {
-            val gearDescription = gearGuidance.preferredGear
-                ?.let { ", preferowany bieg $it" }
-                .orEmpty()
+            val gearDescription = when {
+                gearGuidance.estimate.status == GearEstimateStatus.REVERSE ->
+                    ", bieg wsteczny"
+
+                gearGuidance.preferredGear != null ->
+                    ", preferowany bieg ${gearGuidance.preferredGear}"
+
+                else -> ""
+            }
             val shiftDescription = when (gearGuidance.shiftDirection) {
                 ShiftDirection.UP -> ", zmień bieg w górę"
                 ShiftDirection.DOWN -> ", zmień bieg w dół"
@@ -2034,6 +2755,26 @@ private fun steeringGuideTint(strength: Float): Color {
         )
     }
 }
+
+private fun steeringTint(angleDegrees: Float?): Color =
+    angleDegrees
+        ?.let {
+            steeringGuideTint(
+                abs(it) / MAX_STEERING_WHEEL_ANGLE_DEGREES,
+            )
+        }
+        ?: Muted
+
+private fun raw(value: Int?): String = value?.toString() ?: "—"
+
+private fun formatOneDecimal(value: Double): String =
+    String.format(Locale("pl", "PL"), "%.1f", value)
+
+private fun formatTwoDecimals(value: Double): String =
+    String.format(Locale("pl", "PL"), "%.2f", value)
+
+private fun formatFourDecimals(value: Double): String =
+    String.format(Locale("pl", "PL"), "%.4f", value)
 
 private fun formatOdometer(value: Long): String =
     NumberFormat.getIntegerInstance(Locale("pl", "PL")).format(value)

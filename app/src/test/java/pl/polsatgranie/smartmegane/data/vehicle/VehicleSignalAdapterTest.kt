@@ -2,6 +2,7 @@ package pl.polsatgranie.smartmegane.data.vehicle
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
@@ -15,34 +16,32 @@ class VehicleSignalAdapterTest {
     private val adapter = VehicleSignalAdapter()
 
     @Test
-    fun missingSignalsLeaveTheWholePlaceholderUntouched() {
-        val base = VehicleState(
-            speedKph = 72,
-            isFrontLeftDoorOpen = true,
-            wiperMode = WiperMode.LOW,
-            steeringWheelAngleDegrees = -42f,
-        )
-
-        assertEquals(base, adapter.merge(base, SignalState()))
+    fun missingSignalsProduceNeutralLiveState() {
+        assertEquals(VehicleState(), adapter.merge(SignalState()))
     }
 
     @Test
-    fun mapsConfirmedNumericSignalsAndDuplicatePedalInputs() {
+    fun mapsCanonicalNumericAndControlSignals() {
         val signals = stateOf(
-            SignalDefinitions.engineRpmPrimary to SignalValue.Number(799.75, "rpm"),
+            SignalDefinitions.engineRpm to SignalValue.Number(799.75, "rpm"),
             SignalDefinitions.vehicleSpeedKph to SignalValue.Number(12.34, "km/h"),
-            SignalDefinitions.coolantTemperature60D to SignalValue.Number(58.0, "degC"),
-            SignalDefinitions.odometer5FD to SignalValue.Number(258_058.0, "km"),
+            SignalDefinitions.coolantTemperature to SignalValue.Number(58.0, "degC"),
+            SignalDefinitions.odometer to SignalValue.Number(258_058.0, "km"),
             SignalDefinitions.steeringAngleDegrees to SignalValue.Number(15.6, "deg"),
             SignalDefinitions.steeringAngularVelocityRaw to SignalValue.Number(10.0, "raw"),
-            SignalDefinitions.clutchPressed181 to SignalValue.Bool(true),
-            SignalDefinitions.brakePressed181 to SignalValue.Bool(false),
-            SignalDefinitions.brakePressed354 to SignalValue.Bool(true),
+            SignalDefinitions.clutchPressed to SignalValue.Bool(true),
+            SignalDefinitions.brakePressed to SignalValue.Bool(true),
             SignalDefinitions.parkingBrake to SignalValue.Bool(true),
             SignalDefinitions.acceleratorPedalRaw to SignalValue.Number(224.0, "raw"),
+            SignalDefinitions.fuelLevelRaw to SignalValue.Number(114.0, "raw"),
+            SignalDefinitions.engineRunning to SignalValue.Bool(true),
+            SignalDefinitions.engineDataValid to SignalValue.Bool(true),
+            SignalDefinitions.steeringDataValid to SignalValue.Bool(true),
+            SignalDefinitions.rearDefrostOn to SignalValue.Bool(true),
+            SignalDefinitions.asrEspDisabled to SignalValue.Bool(true),
         )
 
-        val result = adapter.merge(VehicleState(), signals, nowMs = 1_000)
+        val result = adapter.merge(signals, nowMs = 1_000)
 
         assertEquals(800, result.engineRpm)
         assertEquals(799.75, result.engineRpmPrecise ?: 0.0, 0.0)
@@ -52,6 +51,7 @@ class VehicleSignalAdapterTest {
         assertTrue(result.isSpeedSignalAvailable)
         assertEquals(58, result.coolantTemperatureCelsius)
         assertEquals(258_058L, result.odometerKm)
+        assertEquals(114, result.fuelLevelRaw)
         assertEquals(15.6f, result.steeringWheelAngleDegrees ?: 0f, 0.001f)
         assertEquals(10, result.steeringWheelAngularVelocityRaw)
         assertEquals(100f, result.acceleratorPedalPercent ?: 0f, 0.001f)
@@ -60,67 +60,38 @@ class VehicleSignalAdapterTest {
         assertTrue(result.isBrakePedalPressed)
         assertTrue(result.isBrakePedalSignalAvailable)
         assertTrue(result.isParkingBrakeActive)
+        assertTrue(result.isEngineRunning)
+        assertTrue(result.isEngineDataValid)
+        assertTrue(result.isSteeringDataValid)
+        assertTrue(result.isRearDefrostOn)
+        assertTrue(result.isEspAsrDisabled)
     }
 
     @Test
-    fun freshPrimaryRpmWinsAndStalePrimaryFallsBackToSecondary() {
-        val values = mapOf(
-            SignalDefinitions.engineRpmPrimary.id to SignalValue.Number(900.0, "rpm"),
-            SignalDefinitions.engineRpmSecondary.id to SignalValue.Number(800.0, "rpm"),
-        )
-        val stalePrimary = SignalState(
-            values = values,
-            timestampsMs = mapOf(
-                SignalDefinitions.engineRpmPrimary.id to 0L,
-                SignalDefinitions.engineRpmSecondary.id to 900L,
-            ),
-        )
-
-        val fallbackResult = adapter.merge(
-            VehicleState(),
-            stalePrimary,
-            nowMs = 1_000,
-        )
-
-        assertEquals(800, fallbackResult.engineRpm)
-        assertTrue(fallbackResult.areRpmSourcesConsistent)
-
-        val bothFresh = stalePrimary.copy(
-            timestampsMs = stalePrimary.timestampsMs.mapValues { 1_000L },
-        )
-        val primaryResult = adapter.merge(
-            VehicleState(),
-            bothFresh,
-            nowMs = 1_000,
-        )
-
-        assertEquals(900, primaryResult.engineRpm)
-        assertFalse(primaryResult.areRpmSourcesConsistent)
-    }
-
-    @Test
-    fun staleDrivingSignalsAreMarkedUnavailableInsteadOfBecomingFalseFacts() {
+    fun staleCanonicalSignalsAreUnavailableAndNeverReplaced() {
         val stale = SignalState(
             values = mapOf(
-                SignalDefinitions.engineRpmPrimary.id to SignalValue.Number(2_000.0, "rpm"),
+                SignalDefinitions.engineRpm.id to SignalValue.Number(2_000.0, "rpm"),
                 SignalDefinitions.vehicleSpeedKph.id to SignalValue.Number(50.0, "km/h"),
-                SignalDefinitions.clutchPressed181.id to SignalValue.Bool(false),
-                SignalDefinitions.brakePressed181.id to SignalValue.Bool(false),
+                SignalDefinitions.clutchPressed.id to SignalValue.Bool(false),
+                SignalDefinitions.brakePressed.id to SignalValue.Bool(false),
             ),
             timestampsMs = mapOf(
-                SignalDefinitions.engineRpmPrimary.id to 0L,
+                SignalDefinitions.engineRpm.id to 0L,
                 SignalDefinitions.vehicleSpeedKph.id to 0L,
-                SignalDefinitions.clutchPressed181.id to 0L,
-                SignalDefinitions.brakePressed181.id to 0L,
+                SignalDefinitions.clutchPressed.id to 0L,
+                SignalDefinitions.brakePressed.id to 0L,
             ),
         )
 
-        val result = adapter.merge(VehicleState(), stale, nowMs = 2_000L)
+        val result = adapter.merge(stale, nowMs = 2_000L)
 
         assertFalse(result.isEngineRpmSignalAvailable)
         assertFalse(result.isSpeedSignalAvailable)
         assertFalse(result.isClutchPedalSignalAvailable)
         assertFalse(result.isBrakePedalSignalAvailable)
+        assertNull(result.engineRpmPrecise)
+        assertNull(result.speedKphPrecise)
     }
 
     @Test
@@ -138,7 +109,7 @@ class VehicleSignalAdapterTest {
             SignalDefinitions.rearFogLights to SignalValue.Bool(false),
             SignalDefinitions.leftTurnSignal to SignalValue.Bool(true),
             SignalDefinitions.rightTurnSignal to SignalValue.Bool(false),
-            SignalDefinitions.reverseGear60D to SignalValue.Bool(true),
+            SignalDefinitions.reverseGear to SignalValue.Bool(true),
             SignalDefinitions.doorsLocked to SignalValue.Bool(true),
             SignalDefinitions.trunkLocked to SignalValue.Bool(true),
             SignalDefinitions.ignitionOn to SignalValue.Bool(true),
@@ -146,7 +117,7 @@ class VehicleSignalAdapterTest {
             SignalDefinitions.outsideTemperature to SignalValue.Number(20.0, "degC"),
         )
 
-        val result = adapter.merge(VehicleState(), signals, nowMs = 1_000)
+        val result = adapter.merge(signals, nowMs = 1_000)
 
         assertTrue(result.isFrontLeftDoorOpen)
         assertFalse(result.isFrontRightDoorOpen)
@@ -170,12 +141,12 @@ class VehicleSignalAdapterTest {
     }
 
     @Test
-    fun knownWiperCodesMapToDistinctTypedModes() {
+    fun capturedWiperCodesMapToDistinctTypedModes() {
         val expected = mapOf(
             0 to WiperMode.OFF,
             1 to WiperMode.INTERMITTENT,
-            2 to WiperMode.LOW,
-            3 to WiperMode.HIGH,
+            6 to WiperMode.LOW,
+            7 to WiperMode.HIGH,
         )
 
         expected.forEach { (code, mode) ->
@@ -186,7 +157,7 @@ class VehicleSignalAdapterTest {
                 ),
             )
 
-            assertEquals(mode, adapter.merge(VehicleState(), signals).wiperMode)
+            assertEquals(mode, adapter.merge(signals).wiperMode)
         }
     }
 

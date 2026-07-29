@@ -7,6 +7,23 @@ import org.junit.Test
 
 class GearAdvisorTest {
     @Test
+    fun reverseDisplaysRWithoutForwardRecommendationOrArrow() {
+        val result = GearAdvisor().update(
+            input(
+                speedKph = 0.0,
+                engineRpm = 800.0,
+                reverseEngaged = true,
+            ),
+            nowMs = 0L,
+        )
+
+        assertEquals(GearEstimateStatus.REVERSE, result.estimate.status)
+        assertEquals("R", result.displayGear)
+        assertNull(result.preferredGear)
+        assertEquals(ShiftDirection.NONE, result.shiftDirection)
+    }
+
+    @Test
     fun infersSecondGearFromFactoryRatioOnlyAfterDwell() {
         val advisor = GearAdvisor()
         val input = input(speedKph = 15.96, engineRpm = 1_000.0)

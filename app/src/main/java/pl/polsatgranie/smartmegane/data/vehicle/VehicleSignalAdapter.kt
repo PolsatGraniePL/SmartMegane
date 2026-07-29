@@ -1,6 +1,5 @@
 package pl.polsatgranie.smartmegane.data.vehicle
 
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
 import pl.polsatgranie.smartmegane.domain.signal.SignalKey
@@ -10,11 +9,11 @@ import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
 import pl.polsatgranie.smartmegane.domain.vehicle.WiperMode
 
 /**
- * Bridges decoded CAN signals into the typed, UI-facing vehicle API.
+ * Bridges the canonical CAN map into the typed, UI-facing vehicle API.
  *
- * Duplicate broadcasts stay separate in [SignalDefinitions]. That lets this
- * adapter prefer the fastest source, fall back to a second ECU and expose an
- * inconsistency instead of silently averaging two disagreeing values.
+ * There is no alternate-source selection here. Each property reads one
+ * [SignalDefinitions] key and becomes unavailable/default when that source is
+ * absent or stale.
  */
 class VehicleSignalAdapter {
     private companion object {
@@ -22,13 +21,11 @@ class VehicleSignalAdapter {
         const val SPEED_MAX_AGE_MS = 750L
         const val BODY_SIGNAL_MAX_AGE_MS = 750L
         const val SLOW_SIGNAL_MAX_AGE_MS = 1_500L
-        const val RPM_DISAGREEMENT_THRESHOLD = 50.0
         const val ACCELERATOR_RELEASED_RAW = 0x10
         const val ACCELERATOR_FULL_RAW = 0xE0
     }
 
     fun merge(
-        placeholder: VehicleState,
         signals: SignalState,
         nowMs: Long? = null,
     ): VehicleState {
@@ -54,276 +51,284 @@ class VehicleSignalAdapter {
         ): Boolean? =
             (signalValue(key, maxAgeMs) as? SignalValue.Bool)?.value
 
-        fun combinedBoolean(
-            keys: List<SignalKey>,
-            maxAgeMs: Long,
-            fallback: Boolean,
-        ): Boolean {
-            val candidates = keys.mapNotNull { boolean(it, maxAgeMs) }
-            return if (candidates.isEmpty()) fallback else candidates.any { it }
-        }
+        fun rounded(
+            key: SignalKey,
+            maxAgeMs: Long? = null,
+        ): Int? = number(key, maxAgeMs)?.roundToInt()
 
-        val rpmPrimary = number(
-            SignalDefinitions.engineRpmPrimary,
-            FAST_SIGNAL_MAX_AGE_MS,
-        )
-        val rpmSecondary = number(
-            SignalDefinitions.engineRpmSecondary,
-            FAST_SIGNAL_MAX_AGE_MS,
-        )
-        val rpm = rpmPrimary ?: rpmSecondary
-        val rpmTimestampMs = when {
-            rpmPrimary != null ->
-                signals.timestampMs(SignalDefinitions.engineRpmPrimary)
-
-            rpmSecondary != null ->
-                signals.timestampMs(SignalDefinitions.engineRpmSecondary)
-
-            else -> null
-        }
-        val rpmSourcesConsistent = when {
-            rpmPrimary != null && rpmSecondary != null ->
-                abs(rpmPrimary - rpmSecondary) <= RPM_DISAGREEMENT_THRESHOLD
-
-            rpm != null -> true
-            else -> placeholder.areRpmSourcesConsistent
-        }
-
-        val speedPrimary = number(
-            SignalDefinitions.vehicleSpeedKph,
-            SPEED_MAX_AGE_MS,
-        )
-        val speedSecondary = number(
-            SignalDefinitions.speedSecondary645,
-            SLOW_SIGNAL_MAX_AGE_MS,
-        )
-        val speed = speedPrimary ?: speedSecondary
-        val speedTimestampMs = when {
-            speedPrimary != null ->
-                signals.timestampMs(SignalDefinitions.vehicleSpeedKph)
-
-            speedSecondary != null ->
-                signals.timestampMs(SignalDefinitions.speedSecondary645)
-
-            else -> null
-        }
-        val kinematicsSampleTimestampMs =
+        val rpm = number(SignalDefinitions.engineRpm, FAST_SIGNAL_MAX_AGE_MS)
+        val speed = number(SignalDefinitions.vehicleSpeedKph, SPEED_MAX_AGE_MS)
+        val rpmTimestampMs =
+            rpm?.let { signals.timestampMs(SignalDefinitions.engineRpm) }
+        val speedTimestampMs =
+            speed?.let { signals.timestampMs(SignalDefinitions.vehicleSpeedKph) }
+        val kinematicsTimestamp =
             if (rpmTimestampMs != null && speedTimestampMs != null) {
                 minOf(rpmTimestampMs, speedTimestampMs)
             } else {
                 null
             }
-        val coolantTemperature = number(
-            SignalDefinitions.coolantTemperature60D,
-            BODY_SIGNAL_MAX_AGE_MS,
-        ) ?: number(
-            SignalDefinitions.coolantTemperature551,
-            SLOW_SIGNAL_MAX_AGE_MS,
-        )
-        val odometer = number(SignalDefinitions.odometer5FD)
-            ?: number(SignalDefinitions.odometer5C5)
-            ?: number(SignalDefinitions.odometer715)
-        val wipers = (signalValue(
-            SignalDefinitions.wipersMode,
-            BODY_SIGNAL_MAX_AGE_MS,
-        ) as? SignalValue.Enum)?.code?.toWiperModeOrNull()
-        val acceleratorRaw = number(
-            SignalDefinitions.acceleratorPedalRaw,
-            FAST_SIGNAL_MAX_AGE_MS,
-        )
+        val acceleratorRaw =
+            number(SignalDefinitions.acceleratorPedalRaw, FAST_SIGNAL_MAX_AGE_MS)
         val acceleratorPercent = acceleratorRaw?.let {
             (((it - ACCELERATOR_RELEASED_RAW) /
                 (ACCELERATOR_FULL_RAW - ACCELERATOR_RELEASED_RAW)) * 100.0)
                 .coerceIn(0.0, 100.0)
                 .toFloat()
         }
-        val brakeCandidates = listOf(
-            SignalDefinitions.brakePressed181,
-            SignalDefinitions.brakePressed354,
-        ).mapNotNull { boolean(it, SPEED_MAX_AGE_MS) }
-        val brakePressed = brakeCandidates
-            .takeIf { it.isNotEmpty() }
-            ?.any { it }
-        val clutchPressed = boolean(
-            SignalDefinitions.clutchPressed181,
-            FAST_SIGNAL_MAX_AGE_MS,
-        )
-        val reverseCandidates = listOf(
-            SignalDefinitions.reverseGear60D,
-            SignalDefinitions.reverseGear215,
-        ).mapNotNull { boolean(it, BODY_SIGNAL_MAX_AGE_MS) }
-        val reverseEngaged = reverseCandidates
-            .takeIf { it.isNotEmpty() }
-            ?.any { it }
+        val brakePressed =
+            boolean(SignalDefinitions.brakePressed, FAST_SIGNAL_MAX_AGE_MS)
+        val clutchPressed =
+            boolean(SignalDefinitions.clutchPressed, FAST_SIGNAL_MAX_AGE_MS)
+        val reverseEngaged =
+            boolean(SignalDefinitions.reverseGear, BODY_SIGNAL_MAX_AGE_MS)
+        val wipers = (signalValue(
+            SignalDefinitions.wipersMode,
+            BODY_SIGNAL_MAX_AGE_MS,
+        ) as? SignalValue.Enum)?.code?.toWiperModeOrNull()
 
-        return placeholder.copy(
-            speedKph = speed?.roundToInt() ?: placeholder.speedKph,
-            speedKphPrecise = speed ?: placeholder.speedKphPrecise,
+        return VehicleState(
+            speedKph = speed?.roundToInt() ?: 0,
+            speedKphPrecise = speed,
             isSpeedSignalAvailable = speed != null,
-            engineRpm = rpm?.roundToInt() ?: placeholder.engineRpm,
-            engineRpmPrecise = rpm ?: placeholder.engineRpmPrecise,
+            engineRpm = rpm?.roundToInt() ?: 0,
+            engineRpmPrecise = rpm,
             isEngineRpmSignalAvailable = rpm != null,
-            kinematicsSampleTimestampMs = kinematicsSampleTimestampMs,
-            areRpmSourcesConsistent = rpmSourcesConsistent,
+            kinematicsSampleTimestampMs = kinematicsTimestamp,
+            fuelLevelRaw =
+                rounded(SignalDefinitions.fuelLevelRaw, SLOW_SIGNAL_MAX_AGE_MS),
             coolantTemperatureCelsius =
-                coolantTemperature?.roundToInt()
-                    ?: placeholder.coolantTemperatureCelsius,
+                rounded(
+                    SignalDefinitions.coolantTemperature,
+                    SLOW_SIGNAL_MAX_AGE_MS,
+                ) ?: 0,
             outsideTemperatureCelsius =
-                number(
+                rounded(
                     SignalDefinitions.outsideTemperature,
                     BODY_SIGNAL_MAX_AGE_MS,
-                )?.roundToInt() ?: placeholder.outsideTemperatureCelsius,
-            odometerKm = odometer?.toLong() ?: placeholder.odometerKm,
+                ),
+            odometerKm =
+                number(SignalDefinitions.odometer)?.toLong() ?: 0L,
             distanceSinceStartMeters =
                 number(
                     SignalDefinitions.distanceSinceStart,
                     SPEED_MAX_AGE_MS,
-                ) ?: placeholder.distanceSinceStartMeters,
+                ),
             fuelUsedSinceStartLiters =
                 number(
                     SignalDefinitions.fuelUsedSinceStart,
                     SLOW_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.fuelUsedSinceStartLiters,
+                ),
             vehicleAgeMinutes =
-                number(SignalDefinitions.vehicleAgeMinutes)?.toLong()
-                    ?: placeholder.vehicleAgeMinutes,
-            acceleratorPedalPercent =
-                acceleratorPercent ?: placeholder.acceleratorPedalPercent,
+                number(SignalDefinitions.vehicleAgeMinutes)?.toLong(),
+            acceleratorPedalPercent = acceleratorPercent,
             requestedEngineTorqueNm =
-                number(
+                rounded(
                     SignalDefinitions.driverRequestedTorque,
                     FAST_SIGNAL_MAX_AGE_MS,
-                )?.roundToInt() ?: placeholder.requestedEngineTorqueNm,
+                ),
+            isEngineRunning =
+                boolean(
+                    SignalDefinitions.engineRunning,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isEngineDataValid =
+                boolean(
+                    SignalDefinitions.engineDataValid,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isSteeringDataValid =
+                boolean(
+                    SignalDefinitions.steeringDataValid,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isClusterNetworkActive =
+                boolean(
+                    SignalDefinitions.clusterNetworkActive,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isRearDefrostOn =
+                boolean(
+                    SignalDefinitions.rearDefrostOn,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isEspAsrDisabled =
+                boolean(
+                    SignalDefinitions.asrEspDisabled,
+                    SPEED_MAX_AGE_MS,
+                ) ?: false,
+            isAsrEspButtonPressed =
+                boolean(
+                    SignalDefinitions.asrEspButtonPressed,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            wheelPairAFirstRaw =
+                rounded(
+                    SignalDefinitions.wheelPairAFirstRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            wheelPairASecondRaw =
+                rounded(
+                    SignalDefinitions.wheelPairASecondRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            wheelPairBFirstRaw =
+                rounded(
+                    SignalDefinitions.wheelPairBFirstRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            wheelPairBSecondRaw =
+                rounded(
+                    SignalDefinitions.wheelPairBSecondRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            yawSensorRaw =
+                rounded(SignalDefinitions.yawRaw, FAST_SIGNAL_MAX_AGE_MS),
+            inertialAxisARaw =
+                rounded(
+                    SignalDefinitions.inertialAxisARaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            inertialAxisBRaw =
+                rounded(
+                    SignalDefinitions.inertialAxisBRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            bodySensorRaw =
+                rounded(SignalDefinitions.bodySensorRaw, SLOW_SIGNAL_MAX_AGE_MS),
+            bodyStatusRaw =
+                rounded(SignalDefinitions.bodyStatusRaw, SLOW_SIGNAL_MAX_AGE_MS),
+            serviceStatusRaw =
+                rounded(SignalDefinitions.serviceStatusRaw, SLOW_SIGNAL_MAX_AGE_MS),
+            odometerStatusRaw =
+                rounded(SignalDefinitions.odometerStatusRaw, SLOW_SIGNAL_MAX_AGE_MS),
             isParkingBrakeActive =
                 boolean(
                     SignalDefinitions.parkingBrake,
                     SLOW_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isParkingBrakeActive,
+                ) ?: false,
             isDriverSeatBeltWarningActive =
                 boolean(
                     SignalDefinitions.driverSeatBeltWarning,
                     SLOW_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isDriverSeatBeltWarningActive,
+                ) ?: false,
             arePositionLightsOn =
                 boolean(
                     SignalDefinitions.positionLights,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.arePositionLightsOn,
+                ) ?: false,
             areLowBeamLightsOn =
                 boolean(
                     SignalDefinitions.lowBeamLights,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.areLowBeamLightsOn,
+                ) ?: false,
             areHighBeamLightsOn =
                 boolean(
                     SignalDefinitions.highBeamLights,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.areHighBeamLightsOn,
+                ) ?: false,
             areFrontFogLightsOn =
                 boolean(
                     SignalDefinitions.frontFogLights,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.areFrontFogLightsOn,
+                ) ?: false,
             areRearFogLightsOn =
                 boolean(
                     SignalDefinitions.rearFogLights,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.areRearFogLightsOn,
+                ) ?: false,
             isLeftTurnSignalOn =
                 boolean(
                     SignalDefinitions.leftTurnSignal,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isLeftTurnSignalOn,
+                ) ?: false,
             isRightTurnSignalOn =
                 boolean(
                     SignalDefinitions.rightTurnSignal,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isRightTurnSignalOn,
+                ) ?: false,
             isFrontLeftDoorOpen =
                 boolean(
                     SignalDefinitions.doorFrontLeft,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isFrontLeftDoorOpen,
+                ) ?: false,
             isFrontRightDoorOpen =
                 boolean(
                     SignalDefinitions.doorFrontRight,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isFrontRightDoorOpen,
+                ) ?: false,
             isRearLeftDoorOpen =
                 boolean(
                     SignalDefinitions.doorRearLeft,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isRearLeftDoorOpen,
+                ) ?: false,
             isRearRightDoorOpen =
                 boolean(
                     SignalDefinitions.doorRearRight,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isRearRightDoorOpen,
+                ) ?: false,
             isTrunkOpen =
                 boolean(
                     SignalDefinitions.trunkOpen,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isTrunkOpen,
-            isBrakePedalPressed =
-                brakePressed ?: placeholder.isBrakePedalPressed,
+                ) ?: false,
+            isBrakePedalPressed = brakePressed ?: false,
             isBrakePedalSignalAvailable = brakePressed != null,
-            isClutchPedalPressed =
-                clutchPressed ?: placeholder.isClutchPedalPressed,
+            isClutchPedalPressed = clutchPressed ?: false,
             isClutchPedalSignalAvailable = clutchPressed != null,
-            isReverseGearEngaged =
-                reverseEngaged ?: placeholder.isReverseGearEngaged,
+            isReverseGearEngaged = reverseEngaged ?: false,
             isReverseGearSignalAvailable = reverseEngaged != null,
             areDoorsLocked =
                 boolean(
                     SignalDefinitions.doorsLocked,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.areDoorsLocked,
+                ) ?: false,
             isTrunkLocked =
                 boolean(
                     SignalDefinitions.trunkLocked,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isTrunkLocked,
+                ) ?: false,
             isIgnitionOn =
                 boolean(
                     SignalDefinitions.ignitionOn,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isIgnitionOn,
+                ) ?: false,
             isAccessoryPowerOn =
                 boolean(
                     SignalDefinitions.accessoryPowerOn,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isAccessoryPowerOn,
+                ) ?: false,
             isPassengerAirbagDisabled =
                 boolean(
                     SignalDefinitions.passengerAirbagDisabled,
                     SLOW_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isPassengerAirbagDisabled,
+                ) ?: false,
             isTripComputerUpPressed =
                 boolean(
                     SignalDefinitions.tripComputerUp,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isTripComputerUpPressed,
+                ) ?: false,
             isTripComputerDownPressed =
                 boolean(
                     SignalDefinitions.tripComputerDown,
                     BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: placeholder.isTripComputerDownPressed,
+                ) ?: false,
             instrumentBacklightRaw =
-                number(
+                rounded(
                     SignalDefinitions.instrumentBacklightRaw,
                     SLOW_SIGNAL_MAX_AGE_MS,
-                )?.roundToInt() ?: placeholder.instrumentBacklightRaw,
+                ),
             steeringWheelAngleDegrees =
                 number(
                     SignalDefinitions.steeringAngleDegrees,
                     FAST_SIGNAL_MAX_AGE_MS,
-                )?.toFloat() ?: placeholder.steeringWheelAngleDegrees,
+                )?.toFloat(),
             steeringWheelAngularVelocityRaw =
-                number(
+                rounded(
                     SignalDefinitions.steeringAngularVelocityRaw,
                     FAST_SIGNAL_MAX_AGE_MS,
-                )?.roundToInt() ?: placeholder.steeringWheelAngularVelocityRaw,
-            wiperMode = wipers ?: placeholder.wiperMode,
+                ),
+            wiperMode = wipers ?: WiperMode.OFF,
         )
     }
 }
@@ -332,7 +337,7 @@ private fun Int.toWiperModeOrNull(): WiperMode? =
     when (this) {
         0 -> WiperMode.OFF
         1 -> WiperMode.INTERMITTENT
-        2 -> WiperMode.LOW
-        3 -> WiperMode.HIGH
+        6 -> WiperMode.LOW
+        7 -> WiperMode.HIGH
         else -> null
     }

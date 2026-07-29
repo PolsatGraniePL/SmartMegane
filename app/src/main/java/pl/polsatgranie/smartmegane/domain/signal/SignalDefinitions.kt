@@ -1,321 +1,531 @@
 package pl.polsatgranie.smartmegane.domain.signal
 
+import pl.polsatgranie.smartmegane.data.can.CanFrame
+
 /**
- * The single CAN-to-signal mapping boundary.
+ * Canonical CAN-to-signal map for the captured Renault Megane II.
  *
- * "Confirmed" entries below come from captures made in the target Megane II.
- * "Candidate" entries are corroborated by the Clio III CAN-V reverse engineering
- * at https://x0r.fr/blog/39 and remain deliberately isolated here for validation.
+ * Every semantic vehicle value has exactly one CAN source. Replicas identified
+ * in the capture (RPM 0x1F9, speed 0x645, coolant 0x60D, odometers 0x5FD/0x715,
+ * pedal copies in 0x35D, reverse in 0x215 and lighting copies in 0x625) are not
+ * registered, so the application cannot silently switch between transmitters.
  *
- * Byte indices are zero-based. All multi-byte Renault fields mapped here are
- * big-endian; this is independent from the little-endian CAN ID in the Waveshare
- * USB envelope.
+ * Byte indices are zero-based. Multi-byte fields are big-endian.
  */
 object SignalDefinitions {
     private const val ID_STEERING = 0x0C2
-    private const val ID_DRIVER_TORQUE = 0x161
+    private const val ID_ENGINE_REQUEST = 0x161
     private const val ID_ENGINE = 0x181
-    private const val ID_RPM_SECONDARY = 0x1F9
-    private const val ID_REVERSE = 0x215
+    private const val ID_ENGINE_STATUS = 0x1F9
+    private const val ID_GEARBOX_STATUS = 0x215
+    private const val ID_ESP_CONTROL = 0x244
+    private const val ID_WHEEL_PAIR_A = 0x284
+    private const val ID_WHEEL_PAIR_B = 0x285
+    private const val ID_INERTIAL = 0x2A0
     private const val ID_SPEED = 0x354
-    private const val ID_WIPERS = 0x35D
-    private const val ID_COOLANT = 0x551
-    private const val ID_ODOMETER_PARKING_BRAKE = 0x5C5
-    private const val ID_ODOMETER_AGE = 0x5FD
+    private const val ID_CLUSTER_CONTROLS = 0x35D
+    private const val ID_IMMOBILIZER_RESPONSE = 0x500
+    private const val ID_STARTUP_HANDSHAKE = 0x505
+    private const val ID_IMMOBILIZER_CHALLENGE = 0x511
+    private const val ID_ENGINE_THERMAL = 0x551
+    private const val ID_STARTUP_DIAGNOSTIC = 0x581
+    private const val ID_ODOMETER_BODY = 0x5C5
+    private const val ID_STARTUP_PULSE = 0x5E4
+    private const val ID_VEHICLE_TIME = 0x5FD
     private const val ID_BODY = 0x60D
+    private const val ID_BODY_ECHO = 0x625
     private const val ID_INSTRUMENTS = 0x645
     private const val ID_RESTRAINTS = 0x651
-    private const val ID_ODOMETER_SLOW = 0x715
+    private const val ID_ODOMETER_STATUS = 0x715
 
-    // Confirmed drivetrain and chassis values.
-    val steeringAngleDegrees = SignalKey("steering.angle_deg", "Kąt kierownicy")
+    // Steering.
+    val steeringAngleDegrees = key("steering.angle_deg", "Kąt kierownicy")
     val steeringAngularVelocityRaw =
-        SignalKey("steering.angular_velocity_raw", "Prędkość obrotu kierownicy (raw)")
-    val engineRpmPrimary = SignalKey("engine.rpm.181", "Obroty silnika 0x181")
-    val engineRpmSecondary = SignalKey("engine.rpm.1f9", "Obroty silnika 0x1F9")
-    val vehicleSpeedKph = SignalKey("vehicle.speed_kph", "Prędkość")
-    val clutchPressed181 = SignalKey("pedal.clutch.181", "Sprzęgło")
-    val brakePressed181 = SignalKey("pedal.brake.181", "Hamulec 0x181")
-    val brakePressed354 = SignalKey("pedal.brake.354", "Hamulec 0x354")
-    val parkingBrake = SignalKey("brake.parking", "Hamulec ręczny")
-    val coolantTemperature551 =
-        SignalKey("temperature.coolant.551", "Temperatura płynu 0x551")
-    val coolantTemperature60D =
-        SignalKey("temperature.coolant.60d", "Temperatura płynu 0x60D")
+        key("steering.angular_velocity_raw", "Prędkość obrotu kierownicy (raw)")
+    val steeringAliveCounter = key("steering.alive_counter", "Licznik ramki kierownicy")
+    val steeringDataValid = key("steering.data_valid", "Ważność danych kierownicy")
+    val steeringStartupFlag = key("steering.startup", "Rozruch nadajnika kierownicy")
+    val steeringChecksum = key("steering.checksum", "Suma kontrolna kierownicy")
 
-    // The same odometer is broadcast in three differently packed fields.
-    val odometer5FD = SignalKey("odometer.5fd", "Przebieg 0x5FD")
-    val odometer5C5 = SignalKey("odometer.5c5", "Przebieg 0x5C5")
-    val odometer715 = SignalKey("odometer.715", "Przebieg 0x715")
-
-    // 0x60D candidate body map, strongly corroborated by the matching captures.
-    val doorFrontLeft = SignalKey("door.front_left", "Drzwi lewe przednie")
-    val doorFrontRight = SignalKey("door.front_right", "Drzwi prawe przednie")
-    val doorRearLeft = SignalKey("door.rear_left", "Drzwi lewe tylne")
-    val doorRearRight = SignalKey("door.rear_right", "Drzwi prawe tylne")
-    val trunkOpen = SignalKey("door.trunk", "Bagażnik")
-    val positionLights = SignalKey("lights.position", "Światła pozycyjne")
-    val lowBeamLights = SignalKey("lights.low_beam", "Światła mijania")
-    val highBeamLights = SignalKey("lights.high_beam", "Światła drogowe")
-    val frontFogLights = SignalKey("lights.front_fog", "Przednie przeciwmgielne")
-    val rearFogLights = SignalKey("lights.rear_fog", "Tylne przeciwmgielne")
-    val leftTurnSignal = SignalKey("turn.left", "Lewy kierunkowskaz")
-    val rightTurnSignal = SignalKey("turn.right", "Prawy kierunkowskaz")
-    val ignitionOn = SignalKey("ignition.on", "Zapłon")
-    val accessoryPowerOn = SignalKey("ignition.accessory", "Akcesoria")
-    val doorsLocked = SignalKey("locks.doors", "Zamek drzwi")
-    val trunkLocked = SignalKey("locks.trunk", "Zamek bagażnika")
-    val outsideTemperature = SignalKey("temperature.outside", "Temperatura zewnętrzna")
-    val reverseGear60D = SignalKey("gear.reverse.60d", "Wsteczny 0x60D")
-    val tripComputerUp = SignalKey("stalk.trip_up", "Przycisk manetki góra")
-    val tripComputerDown = SignalKey("stalk.trip_down", "Przycisk manetki dół")
-
-    // Additional candidates from the reference capture.
-    val reverseGear215 = SignalKey("gear.reverse.215", "Wsteczny 0x215")
+    // Engine, pedals and driveline.
     val driverRequestedTorque =
-        SignalKey("engine.requested_torque", "Żądany moment silnika")
-    val acceleratorPedalRaw = SignalKey("pedal.accelerator_raw", "Pedał gazu (raw)")
-    val distanceSinceStart =
-        SignalKey("trip.distance_since_start", "Dystans od uruchomienia")
-    val fuelUsedSinceStart =
-        SignalKey("trip.fuel_used_since_start", "Paliwo od uruchomienia")
-    val vehicleAgeMinutes = SignalKey("vehicle.age_minutes", "Wiek pojazdu (licznik)")
-    val driverSeatBeltWarning = SignalKey("restraint.driver_belt", "Pas kierowcy")
-    val passengerAirbagDisabled =
-        SignalKey("restraint.passenger_airbag_disabled", "Airbag pasażera wyłączony")
-    val speedSecondary645 = SignalKey("vehicle.speed_kph.645", "Prędkość 0x645")
-    val instrumentBacklightRaw =
-        SignalKey("instruments.backlight_raw", "Jasność zegarów (raw)")
+        key("engine.requested_torque_nm", "Żądany moment silnika")
+    val engineTorqueLikeRaw =
+        key("engine.torque_like_161_raw", "Pole momentu 0x161 (raw)")
+    val engineAnalog161Raw =
+        key("engine.analog_161_raw", "Pole analogowe 0x161 (raw)")
+    val engineLoadRaw = key("engine.load_like_raw", "Obciążenie silnika (raw)")
+    val engineRpm = key("engine.rpm", "Obroty silnika")
+    val acceleratorPedalRaw = key("pedal.accelerator_raw", "Pedał gazu (raw)")
+    val engineState181Raw = key("engine.state_181_raw", "Stan silnika 0x181 (raw)")
+    val engineTorque181Raw = key("engine.torque_181_raw", "Moment 0x181 (raw)")
+    val brakePressed = key("pedal.brake", "Pedał hamulca")
+    val clutchPressed = key("pedal.clutch", "Pedał sprzęgła")
+    val pedalFrameStatusRaw = key("pedal.frame_status_raw", "Status ramki pedałów")
+    val engineAnalog181Raw =
+        key("engine.analog_181_raw", "Pole analogowe 0x181 (raw)")
+    val engineDataValid = key("engine.data_valid", "Ważność danych silnika")
+    val engineState1F9Raw =
+        key("engine.state_1f9_raw", "Stan nadajnika obrotów 0x1F9")
+    val engineStatus1F9Raw =
+        key("engine.status_1f9_raw", "Status silnika 0x1F9 (raw)")
+    val gearboxEngineAnalog0Raw =
+        key("gearbox.engine_analog_0_raw", "Pole silnika 0x215 b0")
+    val gearboxFrameStatusRaw =
+        key("gearbox.frame_status_raw", "Status ramki skrzyni 0x215")
+    val gearboxEngineAnalog2Raw =
+        key("gearbox.engine_analog_2_raw", "Pole silnika 0x215 b2")
+    val gearboxDuplicatedEngineRaw =
+        key("gearbox.duplicated_engine_raw", "Zdublowane pole silnika 0x215")
+    val reverseGear = key("gear.reverse", "Bieg wsteczny")
 
-    /**
-     * This wiper layout was already identified in the app while the old parser
-     * displayed 0x503. Correcting the Waveshare ID byte order maps that apparent
-     * ID to the 0x35D family; the observed frame is retained as 0x35D for testing.
-     */
-    val wipersMode = SignalKey("wipers.mode", "Tryb wycieraczek")
+    // ESP/ABS and kinematics.
+    val asrEspButtonPressed =
+        key("esp.off_button", "Przycisk wyłączenia ASR/ESP")
+    val asrEspButtonEcho =
+        key("esp.off_button_echo", "Potwierdzenie przycisku ASR/ESP")
+    val asrEspButtonReleasePulse =
+        key("esp.off_button_release", "Impuls zwolnienia przycisku ASR/ESP")
+    val asrEspDisabled = key("esp.disabled", "ASR/ESP wyłączone")
+    val wheelPairAFirstRaw = key("wheel.pair_a.first_raw", "Koło A1 (raw)")
+    val wheelPairASecondRaw = key("wheel.pair_a.second_raw", "Koło A2 (raw)")
+    val wheelPairAAliveCounter = key("wheel.pair_a.alive_counter", "Licznik ABS A")
+    val wheelPairAChecksum = key("wheel.pair_a.checksum", "Suma kontrolna ABS A")
+    val wheelPairBFirstRaw = key("wheel.pair_b.first_raw", "Koło B1 (raw)")
+    val wheelPairBSecondRaw = key("wheel.pair_b.second_raw", "Koło B2 (raw)")
+    val wheelPairBAliveCounter = key("wheel.pair_b.alive_counter", "Licznik ABS B")
+    val wheelPairBChecksum = key("wheel.pair_b.checksum", "Suma kontrolna ABS B")
+    val yawRaw = key("inertial.yaw_raw", "Odchylenie/yaw (raw)")
+    val inertialAxisARaw = key("inertial.axis_a_raw", "Oś inercyjna A (raw)")
+    val inertialAxisBRaw = key("inertial.axis_b_raw", "Oś inercyjna B (raw)")
+    val vehicleSpeedKph = key("vehicle.speed_kph", "Prędkość")
+    val distanceSinceStart =
+        key("trip.distance_since_start_m", "Dystans od uruchomienia")
+    val speedDataInvalid = key("vehicle.speed_invalid", "Brak ważnej prędkości")
+
+    // Cluster controls.
+    val clusterNetworkActive =
+        key("cluster.network_active", "Aktywna sieć zestawu wskaźników")
+    val clusterWakeup = key("cluster.wakeup", "Wybudzenie zestawu wskaźników")
+    val rearDefrostOn = key("climate.rear_defrost", "Ogrzewanie tylnej szyby")
+    val wipersMode = key("wipers.mode", "Tryb wycieraczek")
+    val engineRunning = key("engine.running", "Silnik pracuje")
+    val clusterTransition =
+        key("cluster.transition", "Przejście zestawu wskaźników")
+
+    // Security/startup diagnostic fields are kept opaque.
+    val immobilizerResponseControl =
+        key("immobilizer.response_control", "Kontrola odpowiedzi immobilizera")
+    val immobilizerResponseToken =
+        key("immobilizer.response_token", "Token odpowiedzi immobilizera")
+    val startupHandshake =
+        key("startup.handshake_505", "Ramka startowa 0x505")
+    val immobilizerChallengeControl =
+        key("immobilizer.challenge_control", "Kontrola wyzwania immobilizera")
+    val immobilizerChallengeToken =
+        key("immobilizer.challenge_token", "Token wyzwania immobilizera")
+    val startupDiagnostic =
+        key("startup.diagnostic_581", "Ramka startowa 0x581")
+    val startupPulse = key("startup.pulse_5e4", "Impuls startowy 0x5E4")
+
+    // Temperatures, fuel and counters.
+    val coolantTemperature = key("temperature.coolant", "Temperatura płynu")
+    val fuelUsedSinceStart =
+        key("trip.fuel_used_since_start_l", "Paliwo od uruchomienia")
+    val engineThermalFrameStatusRaw =
+        key("engine.thermal_frame_status_raw", "Status ramki temperatury/paliwa")
+    val fuelLevelRaw = key("fuel.level_raw", "Poziom paliwa (raw)")
+    val exteriorLightsPresent =
+        key("lights.exterior_aggregate", "Zbiorczy stan świateł zewnętrznych")
+    val parkingBrake = key("brake.parking", "Hamulec ręczny")
+    val odometer = key("odometer.km", "Przebieg")
+    val odometerFrameTransition =
+        key("odometer.frame_transition", "Przejście ramki przebiegu")
+    val serviceStatusRaw = key("service.status_raw", "Status serwisu (raw)")
+    val vehicleAgeMinutes = key("vehicle.age_minutes", "Wiek pojazdu (licznik)")
+    val vehicleTimeFrameTransition =
+        key("vehicle.time_frame_transition", "Przejście ramki czasu")
+    val odometerStatusRaw =
+        key("odometer.status_raw", "Status repliki przebiegu 0x715")
+
+    // Body, lights and controls. All user-facing fields use the canonical 0x60D.
+    val trunkOpen = key("door.trunk", "Bagażnik")
+    val doorFrontLeft = key("door.front_left", "Drzwi lewe przednie")
+    val doorFrontRight = key("door.front_right", "Drzwi prawe przednie")
+    val doorRearLeft = key("door.rear_left", "Drzwi lewe tylne")
+    val doorRearRight = key("door.rear_right", "Drzwi prawe tylne")
+    val lowBeamLights = key("lights.low_beam", "Światła mijania")
+    val positionLights = key("lights.position", "Światła pozycyjne")
+    val frontFogLights = key("lights.front_fog", "Przednie przeciwmgielne")
+    val highBeamLights = key("lights.high_beam", "Światła drogowe")
+    val accessoryPowerOn = key("ignition.accessory", "Akcesoria")
+    val ignitionOn = key("ignition.on", "Zapłon RUN")
+    val leftTurnSignal = key("turn.left", "Lewy kierunkowskaz")
+    val rightTurnSignal = key("turn.right", "Prawy kierunkowskaz")
+    val trunkLocked = key("locks.trunk", "Zamek bagażnika")
+    val doorsLocked = key("locks.doors", "Zamek drzwi")
+    val rearFogLights = key("lights.rear_fog", "Tylne przeciwmgielne")
+    val outsideTemperature = key("temperature.outside", "Temperatura zewnętrzna")
+    val reverseFrameStatusRaw =
+        key("gear.reverse_frame_status_raw", "Status ramki biegu wstecznego")
+    val tripComputerDown = key("stalk.trip_down", "Przycisk manetki dół")
+    val tripComputerUp = key("stalk.trip_up", "Przycisk manetki góra")
+    val bodySensorRaw = key("body.sensor_raw", "Czujnik nadwozia 0x625 (raw)")
+    val bodyStatusRaw = key("body.status_raw", "Status nadwozia 0x625")
+    val clusterDataValid = key("cluster.data_valid", "Ważność danych zegarów")
+    val instrumentBacklightRaw =
+        key("instruments.backlight_raw", "Jasność zegarów (raw)")
+    val passengerAirbagDisabled =
+        key("restraint.passenger_airbag_disabled", "Airbag pasażera wyłączony")
+    val restraintStartup =
+        key("restraint.startup", "Rozruch systemu poduszek/pasów")
+    val driverSeatBeltWarning =
+        key("restraint.driver_belt", "Pas kierowcy niezapięty")
 
     val specs: List<SignalSpec> = listOf(
         intSignal(
-            key = steeringAngleDegrees,
-            canId = ID_STEERING,
+            steeringAngleDegrees,
+            ID_STEERING,
             startByte = 0,
             length = 2,
             littleEndian = false,
             scale = 0.1,
             offset = -3_276.8,
             unit = "deg",
+            validWhen = ::steeringFrameValid,
         ),
         intSignal(
-            key = steeringAngularVelocityRaw,
-            canId = ID_STEERING,
+            steeringAngularVelocityRaw,
+            ID_STEERING,
             startByte = 2,
             length = 2,
             littleEndian = false,
             offset = -32_768.0,
             unit = "raw",
+            validWhen = ::steeringFrameValid,
         ),
+        maskedIntSignal(steeringAliveCounter, ID_STEERING, 4, 0x0F),
+        bitSignal(steeringDataValid, ID_STEERING, 4, 0x10),
+        bitSignal(steeringStartupFlag, ID_STEERING, 4, 0x80),
+        intSignal(steeringChecksum, ID_STEERING, 5, 1, littleEndian = false),
+
         intSignal(
-            key = driverRequestedTorque,
-            canId = ID_DRIVER_TORQUE,
-            startByte = 0,
-            length = 1,
+            driverRequestedTorque,
+            ID_ENGINE_REQUEST,
+            0,
+            1,
             littleEndian = false,
             scale = 2.0,
             offset = -100.0,
             unit = "Nm",
         ),
+        intSignal(engineTorqueLikeRaw, ID_ENGINE_REQUEST, 1, 1, littleEndian = false),
+        intSignal(engineAnalog161Raw, ID_ENGINE_REQUEST, 2, 1, littleEndian = false),
+        intSignal(engineLoadRaw, ID_ENGINE_REQUEST, 4, 1, littleEndian = false),
+
         intSignal(
-            key = engineRpmPrimary,
-            canId = ID_ENGINE,
-            startByte = 0,
-            length = 2,
+            engineRpm,
+            ID_ENGINE,
+            0,
+            2,
             littleEndian = false,
             scale = 1.0 / 8.0,
             unit = "rpm",
+            validWhen = ::engineFrameValid,
         ),
+        intSignal(acceleratorPedalRaw, ID_ENGINE, 2, 1, littleEndian = false),
+        intSignal(engineState181Raw, ID_ENGINE, 3, 1, littleEndian = false),
+        intSignal(engineTorque181Raw, ID_ENGINE, 4, 1, littleEndian = false),
+        bitSignal(brakePressed, ID_ENGINE, 5, 0x01),
+        bitSignal(clutchPressed, ID_ENGINE, 5, 0x08),
+        maskedIntSignal(pedalFrameStatusRaw, ID_ENGINE, 5, 0x64),
+        intSignal(engineAnalog181Raw, ID_ENGINE, 6, 1, littleEndian = false),
+        bitSignal(engineDataValid, ID_ENGINE, 7, 0x02),
+
+        intSignal(engineState1F9Raw, ID_ENGINE_STATUS, 0, 1, littleEndian = false),
+        intSignal(engineStatus1F9Raw, ID_ENGINE_STATUS, 4, 2, littleEndian = false),
+        intSignal(gearboxEngineAnalog0Raw, ID_GEARBOX_STATUS, 0, 1, littleEndian = false),
+        maskedIntSignal(gearboxFrameStatusRaw, ID_GEARBOX_STATUS, 1, 0xBF),
+        intSignal(gearboxEngineAnalog2Raw, ID_GEARBOX_STATUS, 2, 1, littleEndian = false),
         intSignal(
-            key = acceleratorPedalRaw,
-            canId = ID_ENGINE,
-            // In the x0r diagram the accelerator marker is below 0x52: byte 3.
-            startByte = 3,
-            length = 1,
+            gearboxDuplicatedEngineRaw,
+            ID_GEARBOX_STATUS,
+            4,
+            1,
             littleEndian = false,
-            unit = "raw",
         ),
-        bitSignal(clutchPressed181, ID_ENGINE, byteIndex = 5, mask = 0x08),
-        bitSignal(brakePressed181, ID_ENGINE, byteIndex = 5, mask = 0x01),
+
+        bitSignal(asrEspButtonPressed, ID_ESP_CONTROL, 3, 0x01),
+        bitSignal(asrEspButtonEcho, ID_ESP_CONTROL, 5, 0x10),
+        bitSignal(asrEspButtonReleasePulse, ID_ESP_CONTROL, 5, 0x08),
+
         intSignal(
-            key = engineRpmSecondary,
-            canId = ID_RPM_SECONDARY,
-            startByte = 2,
-            length = 2,
+            wheelPairAFirstRaw,
+            ID_WHEEL_PAIR_A,
+            0,
+            2,
             littleEndian = false,
-            scale = 1.0 / 8.0,
-            unit = "rpm",
+            validWhen = { frame -> be16(frame, 0) != 0xFFFF },
         ),
-        bitSignal(reverseGear215, ID_REVERSE, byteIndex = 1, mask = 0x40),
         intSignal(
-            key = vehicleSpeedKph,
-            canId = ID_SPEED,
-            startByte = 0,
-            length = 2,
+            wheelPairASecondRaw,
+            ID_WHEEL_PAIR_A,
+            2,
+            2,
+            littleEndian = false,
+            validWhen = { frame -> be16(frame, 2) != 0xFFFF },
+        ),
+        intSignal(wheelPairAAliveCounter, ID_WHEEL_PAIR_A, 6, 1, littleEndian = false),
+        intSignal(wheelPairAChecksum, ID_WHEEL_PAIR_A, 7, 1, littleEndian = false),
+        intSignal(
+            wheelPairBFirstRaw,
+            ID_WHEEL_PAIR_B,
+            0,
+            2,
+            littleEndian = false,
+            validWhen = { frame -> be16(frame, 0) != 0xFFFF },
+        ),
+        intSignal(
+            wheelPairBSecondRaw,
+            ID_WHEEL_PAIR_B,
+            2,
+            2,
+            littleEndian = false,
+            validWhen = { frame -> be16(frame, 2) != 0xFFFF },
+        ),
+        intSignal(wheelPairBAliveCounter, ID_WHEEL_PAIR_B, 6, 1, littleEndian = false),
+        intSignal(wheelPairBChecksum, ID_WHEEL_PAIR_B, 7, 1, littleEndian = false),
+
+        intSignal(yawRaw, ID_INERTIAL, 0, 1, littleEndian = false),
+        intSignal(
+            inertialAxisARaw,
+            ID_INERTIAL,
+            1,
+            2,
+            littleEndian = false,
+            offset = -32_767.0,
+            validWhen = { frame -> be16(frame, 1) != 0x7FFF },
+        ),
+        intSignal(
+            inertialAxisBRaw,
+            ID_INERTIAL,
+            3,
+            2,
+            littleEndian = false,
+            offset = -32_767.0,
+            validWhen = { frame -> be16(frame, 3) != 0x7FFF },
+        ),
+
+        intSignal(
+            vehicleSpeedKph,
+            ID_SPEED,
+            0,
+            2,
             littleEndian = false,
             scale = 0.01,
             unit = "km/h",
+            validWhen = ::speedFrameValid,
         ),
         intSignal(
-            key = distanceSinceStart,
-            canId = ID_SPEED,
-            startByte = 2,
-            length = 2,
+            distanceSinceStart,
+            ID_SPEED,
+            2,
+            2,
             littleEndian = false,
             scale = 0.1,
             unit = "m",
         ),
-        bitSignal(brakePressed354, ID_SPEED, byteIndex = 4, mask = 0x10),
+        bitSignal(asrEspDisabled, ID_SPEED, 4, 0x40),
+        bitSignal(speedDataInvalid, ID_SPEED, 6, 0x10),
+
+        bitSignal(clusterNetworkActive, ID_CLUSTER_CONTROLS, 0, 0x80),
+        bitSignal(clusterWakeup, ID_CLUSTER_CONTROLS, 0, 0x40),
+        maskedBoolSignal(rearDefrostOn, ID_CLUSTER_CONTROLS, 0, 0x06, 0x06),
         enumSignal(
-            key = wipersMode,
-            canId = ID_WIPERS,
+            wipersMode,
+            ID_CLUSTER_CONTROLS,
             byteIndex = 2,
-            mask = 0xC0,
-            shift = 6,
+            mask = 0xE0,
+            shift = 5,
             mapping = mapOf(
                 0 to "Off",
                 1 to "Intermittent",
-                2 to "Low",
-                3 to "High",
+                6 to "SingleOrLow",
+                7 to "High",
             ),
         ),
+        bitSignal(engineRunning, ID_CLUSTER_CONTROLS, 5, 0x01),
+        bitSignal(clusterTransition, ID_CLUSTER_CONTROLS, 6, 0x04),
+
         intSignal(
-            key = coolantTemperature551,
-            canId = ID_COOLANT,
-            startByte = 0,
-            length = 1,
+            immobilizerResponseControl,
+            ID_IMMOBILIZER_RESPONSE,
+            0,
+            1,
+            littleEndian = false,
+        ),
+        intSignal(
+            immobilizerResponseToken,
+            ID_IMMOBILIZER_RESPONSE,
+            1,
+            4,
+            littleEndian = false,
+        ),
+        intSignal(startupHandshake, ID_STARTUP_HANDSHAKE, 0, 3, littleEndian = false),
+        intSignal(
+            immobilizerChallengeControl,
+            ID_IMMOBILIZER_CHALLENGE,
+            0,
+            1,
+            littleEndian = false,
+        ),
+        intSignal(
+            immobilizerChallengeToken,
+            ID_IMMOBILIZER_CHALLENGE,
+            1,
+            6,
+            littleEndian = false,
+        ),
+
+        intSignal(
+            coolantTemperature,
+            ID_ENGINE_THERMAL,
+            0,
+            1,
             littleEndian = false,
             offset = -40.0,
             unit = "degC",
         ),
         intSignal(
-            key = fuelUsedSinceStart,
-            canId = ID_COOLANT,
-            startByte = 1,
-            length = 1,
+            fuelUsedSinceStart,
+            ID_ENGINE_THERMAL,
+            1,
+            1,
             littleEndian = false,
             scale = 1.0 / 12_500.0,
             unit = "L",
         ),
-        bitSignal(
-            parkingBrake,
-            ID_ODOMETER_PARKING_BRAKE,
-            byteIndex = 0,
-            mask = 0x08,
+        intSignal(
+            engineThermalFrameStatusRaw,
+            ID_ENGINE_THERMAL,
+            3,
+            1,
+            littleEndian = false,
         ),
+        intSignal(fuelLevelRaw, ID_ENGINE_THERMAL, 5, 1, littleEndian = false),
+        intSignal(startupDiagnostic, ID_STARTUP_DIAGNOSTIC, 0, 4, littleEndian = false),
+
+        maskedBoolSignal(exteriorLightsPresent, ID_ODOMETER_BODY, 0, 0xC0, 0x40),
+        bitSignal(parkingBrake, ID_ODOMETER_BODY, 0, 0x04),
         bigEndianBitFieldSignal(
-            key = odometer5C5,
-            canId = ID_ODOMETER_PARKING_BRAKE,
+            odometer,
+            ID_ODOMETER_BODY,
             startBit = 12,
             length = 20,
             unit = "km",
         ),
-        bigEndianBitFieldSignal(
-            key = odometer5FD,
-            canId = ID_ODOMETER_AGE,
-            startBit = 0,
-            length = 20,
-            unit = "km",
+        maskedIntSignal(
+            odometerFrameTransition,
+            ID_ODOMETER_BODY,
+            byteIndex = 4,
+            mask = 0x10,
+            shift = 4,
         ),
+        intSignal(serviceStatusRaw, ID_ODOMETER_BODY, 7, 1, littleEndian = false),
+        bitSignal(startupPulse, ID_STARTUP_PULSE, 0, 0x01),
         bigEndianBitFieldSignal(
-            key = vehicleAgeMinutes,
-            canId = ID_ODOMETER_AGE,
+            vehicleAgeMinutes,
+            ID_VEHICLE_TIME,
             startBit = 20,
             length = 24,
             unit = "min",
         ),
-        bitSignal(trunkOpen, ID_BODY, byteIndex = 0, mask = 0x80),
-        bitSignal(doorRearRight, ID_BODY, byteIndex = 0, mask = 0x40),
-        bitSignal(doorRearLeft, ID_BODY, byteIndex = 0, mask = 0x20),
-        bitSignal(doorFrontRight, ID_BODY, byteIndex = 0, mask = 0x10),
-        bitSignal(doorFrontLeft, ID_BODY, byteIndex = 0, mask = 0x08),
-        bitSignal(positionLights, ID_BODY, byteIndex = 0, mask = 0x04),
-        bitSignal(lowBeamLights, ID_BODY, byteIndex = 0, mask = 0x02),
-        bitSignal(rightTurnSignal, ID_BODY, byteIndex = 1, mask = 0x40),
-        bitSignal(leftTurnSignal, ID_BODY, byteIndex = 1, mask = 0x20),
-        bitSignal(highBeamLights, ID_BODY, byteIndex = 1, mask = 0x08),
-        bitSignal(ignitionOn, ID_BODY, byteIndex = 1, mask = 0x04),
-        bitSignal(accessoryPowerOn, ID_BODY, byteIndex = 1, mask = 0x02),
-        bitSignal(frontFogLights, ID_BODY, byteIndex = 1, mask = 0x01),
-        bitSignal(doorsLocked, ID_BODY, byteIndex = 2, mask = 0x20),
-        bitSignal(trunkLocked, ID_BODY, byteIndex = 2, mask = 0x10),
-        bitSignal(rearFogLights, ID_BODY, byteIndex = 2, mask = 0x04),
+        maskedIntSignal(
+            vehicleTimeFrameTransition,
+            ID_VEHICLE_TIME,
+            byteIndex = 7,
+            mask = 0xF0,
+            shift = 4,
+        ),
+
+        bitSignal(trunkOpen, ID_BODY, 0, 0x80),
+        bitSignal(doorRearRight, ID_BODY, 0, 0x40),
+        bitSignal(doorRearLeft, ID_BODY, 0, 0x20),
+        bitSignal(doorFrontRight, ID_BODY, 0, 0x10),
+        bitSignal(doorFrontLeft, ID_BODY, 0, 0x08),
+        bitSignal(positionLights, ID_BODY, 0, 0x04),
+        bitSignal(lowBeamLights, ID_BODY, 0, 0x02),
+        bitSignal(rightTurnSignal, ID_BODY, 1, 0x40),
+        bitSignal(leftTurnSignal, ID_BODY, 1, 0x20),
+        bitSignal(highBeamLights, ID_BODY, 1, 0x08),
+        bitSignal(ignitionOn, ID_BODY, 1, 0x04),
+        bitSignal(accessoryPowerOn, ID_BODY, 1, 0x02),
+        bitSignal(frontFogLights, ID_BODY, 1, 0x01),
+        bitSignal(doorsLocked, ID_BODY, 2, 0x20),
+        bitSignal(trunkLocked, ID_BODY, 2, 0x10),
+        bitSignal(rearFogLights, ID_BODY, 2, 0x04),
         intSignal(
-            key = outsideTemperature,
-            canId = ID_BODY,
-            startByte = 4,
-            length = 1,
+            outsideTemperature,
+            ID_BODY,
+            4,
+            1,
             littleEndian = false,
             offset = -40.0,
             unit = "degC",
         ),
+        maskedIntSignal(reverseFrameStatusRaw, ID_BODY, 6, 0x2F),
+        bitSignal(
+            reverseGear,
+            ID_BODY,
+            byteIndex = 6,
+            mask = 0x10,
+            validWhen = ::reverseFrameValid,
+        ),
+        bitSignal(tripComputerUp, ID_BODY, 7, 0x01),
+        bitSignal(tripComputerDown, ID_BODY, 7, 0x02),
+
+        intSignal(bodySensorRaw, ID_BODY_ECHO, 2, 1, littleEndian = false),
+        intSignal(bodyStatusRaw, ID_BODY_ECHO, 3, 1, littleEndian = false),
+        bitSignal(clusterDataValid, ID_INSTRUMENTS, 0, 0x40),
         intSignal(
-            key = coolantTemperature60D,
-            canId = ID_BODY,
-            startByte = 5,
-            length = 1,
+            instrumentBacklightRaw,
+            ID_INSTRUMENTS,
+            1,
+            1,
             littleEndian = false,
-            offset = -40.0,
-            unit = "degC",
+            validWhen = { frame -> byte(frame, 1) != 0xFF },
         ),
-        bitSignal(reverseGear60D, ID_BODY, byteIndex = 6, mask = 0x10),
-        bitSignal(tripComputerUp, ID_BODY, byteIndex = 7, mask = 0x01),
-        bitSignal(tripComputerDown, ID_BODY, byteIndex = 7, mask = 0x02),
-        intSignal(
-            key = instrumentBacklightRaw,
-            canId = ID_INSTRUMENTS,
-            startByte = 1,
-            length = 1,
-            littleEndian = false,
-            unit = "raw",
-        ),
-        intSignal(
-            key = speedSecondary645,
-            canId = ID_INSTRUMENTS,
-            startByte = 3,
-            length = 2,
-            littleEndian = false,
-            scale = 0.01,
-            unit = "km/h",
-        ),
-        bitSignal(driverSeatBeltWarning, ID_RESTRAINTS, byteIndex = 1, mask = 0x01),
-        bitSignal(passengerAirbagDisabled, ID_RESTRAINTS, byteIndex = 0, mask = 0x02),
-        bigEndianBitFieldSignal(
-            key = odometer715,
-            canId = ID_ODOMETER_SLOW,
-            startBit = 4,
-            length = 20,
-            unit = "km",
-        ),
+        bitSignal(passengerAirbagDisabled, ID_RESTRAINTS, 0, 0x02),
+        bitSignal(restraintStartup, ID_RESTRAINTS, 0, 0x08),
+        bitSignal(driverSeatBeltWarning, ID_RESTRAINTS, 1, 0x01),
+        intSignal(odometerStatusRaw, ID_ODOMETER_STATUS, 3, 1, littleEndian = false),
     )
 
     val groups: List<SignalGroup> = listOf(
         SignalGroup(
             title = "Drivetrain",
             keys = listOf(
-                engineRpmPrimary,
-                engineRpmSecondary,
+                engineRpm,
                 vehicleSpeedKph,
-                clutchPressed181,
-                brakePressed181,
-                brakePressed354,
                 acceleratorPedalRaw,
+                clutchPressed,
+                brakePressed,
+                reverseGear,
                 driverRequestedTorque,
+                engineRunning,
             ),
         ),
         SignalGroup(
-            title = "Steering & body",
+            title = "Steering, ABS & body",
             keys = listOf(
                 steeringAngleDegrees,
                 steeringAngularVelocityRaw,
+                wheelPairAFirstRaw,
+                wheelPairASecondRaw,
+                wheelPairBFirstRaw,
+                wheelPairBSecondRaw,
                 wipersMode,
+                rearDefrostOn,
                 doorFrontLeft,
                 doorFrontRight,
                 doorRearLeft,
@@ -324,7 +534,7 @@ object SignalDefinitions {
             ),
         ),
         SignalGroup(
-            title = "Lights",
+            title = "Lights & controls",
             keys = listOf(
                 positionLights,
                 lowBeamLights,
@@ -333,22 +543,52 @@ object SignalDefinitions {
                 rearFogLights,
                 leftTurnSignal,
                 rightTurnSignal,
+                asrEspDisabled,
+                driverSeatBeltWarning,
+                parkingBrake,
             ),
         ),
         SignalGroup(
             title = "Temperatures & counters",
             keys = listOf(
-                coolantTemperature60D,
-                coolantTemperature551,
+                coolantTemperature,
                 outsideTemperature,
-                odometer5FD,
-                odometer5C5,
-                odometer715,
-                distanceSinceStart,
+                fuelLevelRaw,
                 fuelUsedSinceStart,
+                odometer,
+                distanceSinceStart,
+                vehicleAgeMinutes,
             ),
         ),
     )
+
+    private fun key(id: String, label: String) = SignalKey(id, label)
+
+    private fun steeringFrameValid(frame: CanFrame): Boolean =
+        frame.dlc > 4 &&
+            byte(frame, 4) and 0x10 != 0 &&
+            be16(frame, 0) != 0xFFFF
+
+    private fun engineFrameValid(frame: CanFrame): Boolean =
+        frame.dlc > 7 && byte(frame, 7) and 0x02 != 0
+
+    private fun speedFrameValid(frame: CanFrame): Boolean =
+        frame.dlc > 6 &&
+            be16(frame, 0) != 0xFFFF &&
+            byte(frame, 6) and 0x10 == 0
+
+    private fun reverseFrameValid(frame: CanFrame): Boolean =
+        frame.dlc > 6 && byte(frame, 6) and 0x0F == 0x01
+
+    private fun be16(frame: CanFrame, startByte: Int): Int =
+        if (startByte + 1 < frame.dlc) {
+            (byte(frame, startByte) shl 8) or byte(frame, startByte + 1)
+        } else {
+            -1
+        }
+
+    private fun byte(frame: CanFrame, index: Int): Int =
+        frame.data.getOrNull(index)?.toInt()?.and(0xFF) ?: -1
 }
 
 data class SignalGroup(

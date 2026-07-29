@@ -33,12 +33,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val usbDataSource = UsbSerialDataSource(application)
     private val vehicleTelemetry = PlaceholderVehicleTelemetry()
-    private val liveSignalFallbackState = vehicleTelemetry.state.value.copy(
-        engineRpm = 0,
-        engineRpmPrecise = null,
-        coolantTemperatureCelsius = 0,
-        odometerKm = 0,
-    )
     private val vehicleSignalAdapter = VehicleSignalAdapter()
     private val parser = WaveshareFrameParser()
     private val signalMapper = SignalMapper(SignalDefinitions.specs)
@@ -71,7 +65,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val updatedSignals = signalMapper.applyFrame(_signalState.value, frame)
                     _signalState.value = updatedSignals
                     _vehicleState.value = vehicleSignalAdapter.merge(
-                        placeholder = liveSignalFallbackState,
                         signals = updatedSignals,
                         nowMs = frame.timestampMs,
                     )
@@ -116,7 +109,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val nowMs = monotonicNowMs()
                     publishVehicleState(
                         state = vehicleSignalAdapter.merge(
-                            placeholder = liveSignalFallbackState,
                             signals = _signalState.value,
                             nowMs = nowMs,
                         ),
@@ -128,7 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             connectionState.collect { state ->
                 if (state is UsbConnectionState.Connected) {
-                    resetDerivedState(liveSignalFallbackState)
+                    resetDerivedState(VehicleState())
                 }
                 if (state is UsbConnectionState.Disconnected ||
                     state is UsbConnectionState.NoDevice ||
