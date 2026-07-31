@@ -4,21 +4,26 @@
 
     <uses-feature
         android:name="android.hardware.usb.host"
-        android:required="true" />
+        android:required="false" />
+
+    <queries>
+        <package android:name="com.google.android.apps.maps" />
+    </queries>
 
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/app_icon"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@mipmap/app_icon_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.SmartMegane">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.SmartMegane">
