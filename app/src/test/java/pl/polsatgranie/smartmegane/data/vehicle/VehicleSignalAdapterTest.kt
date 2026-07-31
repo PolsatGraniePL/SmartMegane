@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
 import pl.polsatgranie.smartmegane.domain.signal.SignalKey
+import pl.polsatgranie.smartmegane.domain.signal.SignalReading
 import pl.polsatgranie.smartmegane.domain.signal.SignalState
 import pl.polsatgranie.smartmegane.domain.signal.SignalValue
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
@@ -37,8 +38,16 @@ class VehicleSignalAdapterTest {
             SignalDefinitions.engineRunning to SignalValue.Bool(true),
             SignalDefinitions.engineDataValid to SignalValue.Bool(true),
             SignalDefinitions.steeringDataValid to SignalValue.Bool(true),
-            SignalDefinitions.rearDefrostOn to SignalValue.Bool(true),
+            SignalDefinitions.rearDefrostCommandActive to SignalValue.Bool(true),
             SignalDefinitions.asrEspDisabled to SignalValue.Bool(true),
+            SignalDefinitions.electronicFault to SignalValue.Bool(true),
+            SignalDefinitions.wheelPairARightSpeedKph to SignalValue.Number(12.3, "km/h"),
+            SignalDefinitions.wheelPairALeftSpeedKph to SignalValue.Number(12.1, "km/h"),
+            SignalDefinitions.wheelPairBRightSpeedKph to SignalValue.Number(12.4, "km/h"),
+            SignalDefinitions.wheelPairBLeftSpeedKph to SignalValue.Number(12.2, "km/h"),
+            SignalDefinitions.longitudinalAccelerationRaw to SignalValue.Number(-3.0, "raw"),
+            SignalDefinitions.lateralAccelerationRaw to SignalValue.Number(24.0, "raw"),
+            SignalDefinitions.yawRateRaw to SignalValue.Number(-12.0, "raw"),
         )
 
         val result = adapter.merge(signals, nowMs = 1_000)
@@ -52,6 +61,8 @@ class VehicleSignalAdapterTest {
         assertEquals(58, result.coolantTemperatureCelsius)
         assertEquals(258_058L, result.odometerKm)
         assertEquals(114, result.fuelLevelRaw)
+        assertEquals(45, result.fuelLevelPercent)
+        assertEquals(44.7059f, result.fuelLevelEstimatedPercent ?: 0f, 0.001f)
         assertEquals(15.6f, result.steeringWheelAngleDegrees ?: 0f, 0.001f)
         assertEquals(10, result.steeringWheelAngularVelocityRaw)
         assertEquals(100f, result.acceleratorPedalPercent ?: 0f, 0.001f)
@@ -63,8 +74,16 @@ class VehicleSignalAdapterTest {
         assertTrue(result.isEngineRunning)
         assertTrue(result.isEngineDataValid)
         assertTrue(result.isSteeringDataValid)
-        assertTrue(result.isRearDefrostOn)
+        assertTrue(result.isRearDefrostCommandActive)
         assertTrue(result.isEspAsrDisabled)
+        assertTrue(result.isElectronicFaultActive)
+        assertEquals(12.3, result.wheelPairARightSpeedKph ?: 0.0, 0.0)
+        assertEquals(12.1, result.wheelPairALeftSpeedKph ?: 0.0, 0.0)
+        assertEquals(12.4, result.wheelPairBRightSpeedKph ?: 0.0, 0.0)
+        assertEquals(12.2, result.wheelPairBLeftSpeedKph ?: 0.0, 0.0)
+        assertEquals(-3, result.longitudinalAccelerationRaw)
+        assertEquals(24, result.lateralAccelerationRaw)
+        assertEquals(-12, result.yawRateRaw)
     }
 
     @Test
@@ -134,7 +153,9 @@ class VehicleSignalAdapterTest {
         assertTrue(result.isReverseGearEngaged)
         assertTrue(result.isReverseGearSignalAvailable)
         assertTrue(result.areDoorsLocked)
+        assertTrue(result.isDoorLockSignalAvailable)
         assertTrue(result.isTrunkLocked)
+        assertTrue(result.isTrunkLockSignalAvailable)
         assertTrue(result.isIgnitionOn)
         assertFalse(result.isAccessoryPowerOn)
         assertEquals(20, result.outsideTemperatureCelsius)
@@ -158,6 +179,27 @@ class VehicleSignalAdapterTest {
             )
 
             assertEquals(mode, adapter.merge(signals).wiperMode)
+        }
+    }
+
+    @Test
+    fun stableTenHertzBodyFramesNeverPulseToFalseBetweenUpdates() {
+        var signals = SignalState()
+        repeat(150) { index ->
+            val timestamp = 1_000L + index * 100L
+            signals = signals.withUpdates(
+                listOf(
+                    SignalReading(SignalDefinitions.doorFrontLeft, SignalValue.Bool(true)),
+                    SignalReading(SignalDefinitions.parkingBrake, SignalValue.Bool(true)),
+                    SignalReading(SignalDefinitions.doorsLocked, SignalValue.Bool(false)),
+                ),
+                timestampMs = timestamp,
+            )
+            val betweenFrames = adapter.merge(signals, nowMs = timestamp + 99L)
+            assertTrue(betweenFrames.isFrontLeftDoorOpen)
+            assertTrue(betweenFrames.isParkingBrakeActive)
+            assertTrue(betweenFrames.isDoorLockSignalAvailable)
+            assertFalse(betweenFrames.areDoorsLocked)
         }
     }
 

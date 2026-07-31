@@ -18,9 +18,14 @@ import pl.polsatgranie.smartmegane.domain.vehicle.WiperMode
 class VehicleSignalAdapter {
     private companion object {
         const val FAST_SIGNAL_MAX_AGE_MS = 500L
-        const val SPEED_MAX_AGE_MS = 750L
-        const val BODY_SIGNAL_MAX_AGE_MS = 750L
-        const val SLOW_SIGNAL_MAX_AGE_MS = 1_500L
+        // A missing publication is not 0 km/h. Retain the last confirmed 0x354
+        // sample until the whole CAN bus itself is considered silent.
+        const val SPEED_MAX_AGE_MS = 1_600L
+        // Body frames arrive at ~10 Hz. Keep their last confirmed value beyond
+        // the 1.5 s whole-bus silence timeout so a scheduling pause can never
+        // turn a door, lock or parking-brake bit into a synthetic false pulse.
+        const val BODY_SIGNAL_MAX_AGE_MS = 2_000L
+        const val SLOW_SIGNAL_MAX_AGE_MS = 3_000L
         const val ACCELERATOR_RELEASED_RAW = 0x10
         const val ACCELERATOR_FULL_RAW = 0xE0
     }
@@ -86,6 +91,20 @@ class VehicleSignalAdapter {
             SignalDefinitions.wipersMode,
             BODY_SIGNAL_MAX_AGE_MS,
         ) as? SignalValue.Enum)?.code?.toWiperModeOrNull()
+        val fuelLevelRaw =
+            rounded(SignalDefinitions.fuelLevelRaw, SLOW_SIGNAL_MAX_AGE_MS)
+        val fuelLevelEstimatedPercent =
+            fuelLevelRaw?.let { (it / 255f * 100f).coerceIn(0f, 100f) }
+        val coolantTemperature =
+            rounded(
+                SignalDefinitions.coolantTemperature,
+                SLOW_SIGNAL_MAX_AGE_MS,
+            )
+        val odometer = number(SignalDefinitions.odometer)
+        val leftTurnSignal =
+            boolean(SignalDefinitions.leftTurnSignal, BODY_SIGNAL_MAX_AGE_MS)
+        val rightTurnSignal =
+            boolean(SignalDefinitions.rightTurnSignal, BODY_SIGNAL_MAX_AGE_MS)
 
         return VehicleState(
             speedKph = speed?.roundToInt() ?: 0,
@@ -95,20 +114,19 @@ class VehicleSignalAdapter {
             engineRpmPrecise = rpm,
             isEngineRpmSignalAvailable = rpm != null,
             kinematicsSampleTimestampMs = kinematicsTimestamp,
-            fuelLevelRaw =
-                rounded(SignalDefinitions.fuelLevelRaw, SLOW_SIGNAL_MAX_AGE_MS),
-            coolantTemperatureCelsius =
-                rounded(
-                    SignalDefinitions.coolantTemperature,
-                    SLOW_SIGNAL_MAX_AGE_MS,
-                ) ?: 0,
+            fuelLevelPercent = fuelLevelEstimatedPercent?.roundToInt() ?: 0,
+            fuelLevelEstimatedPercent = fuelLevelEstimatedPercent,
+            fuelLevelRaw = fuelLevelRaw,
+            isFuelLevelSignalAvailable = fuelLevelRaw != null,
+            coolantTemperatureCelsius = coolantTemperature ?: 0,
+            isCoolantTemperatureSignalAvailable = coolantTemperature != null,
             outsideTemperatureCelsius =
                 rounded(
                     SignalDefinitions.outsideTemperature,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ),
-            odometerKm =
-                number(SignalDefinitions.odometer)?.toLong() ?: 0L,
+            odometerKm = odometer?.toLong() ?: 0L,
+            isOdometerSignalAvailable = odometer != null,
             distanceSinceStartMeters =
                 number(
                     SignalDefinitions.distanceSinceStart,
@@ -119,6 +137,8 @@ class VehicleSignalAdapter {
                     SignalDefinitions.fuelUsedSinceStart,
                     SLOW_SIGNAL_MAX_AGE_MS,
                 ),
+            fuelCounterSampleTimestampMs =
+                signals.timestampMs(SignalDefinitions.fuelUsedSinceStart),
             vehicleAgeMinutes =
                 number(SignalDefinitions.vehicleAgeMinutes)?.toLong(),
             acceleratorPedalPercent = acceleratorPercent,
@@ -147,9 +167,9 @@ class VehicleSignalAdapter {
                     SignalDefinitions.clusterNetworkActive,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
-            isRearDefrostOn =
+            isRearDefrostCommandActive =
                 boolean(
-                    SignalDefinitions.rearDefrostOn,
+                    SignalDefinitions.rearDefrostCommandActive,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
             isEspAsrDisabled =
@@ -162,36 +182,39 @@ class VehicleSignalAdapter {
                     SignalDefinitions.asrEspButtonPressed,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
-            wheelPairAFirstRaw =
-                rounded(
-                    SignalDefinitions.wheelPairAFirstRaw,
+            wheelPairARightSpeedKph =
+                number(
+                    SignalDefinitions.wheelPairARightSpeedKph,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
-            wheelPairASecondRaw =
-                rounded(
-                    SignalDefinitions.wheelPairASecondRaw,
+            wheelPairALeftSpeedKph =
+                number(
+                    SignalDefinitions.wheelPairALeftSpeedKph,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
-            wheelPairBFirstRaw =
-                rounded(
-                    SignalDefinitions.wheelPairBFirstRaw,
+            wheelPairBRightSpeedKph =
+                number(
+                    SignalDefinitions.wheelPairBRightSpeedKph,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
-            wheelPairBSecondRaw =
-                rounded(
-                    SignalDefinitions.wheelPairBSecondRaw,
+            wheelPairBLeftSpeedKph =
+                number(
+                    SignalDefinitions.wheelPairBLeftSpeedKph,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
-            yawSensorRaw =
-                rounded(SignalDefinitions.yawRaw, FAST_SIGNAL_MAX_AGE_MS),
-            inertialAxisARaw =
+            longitudinalAccelerationRaw =
                 rounded(
-                    SignalDefinitions.inertialAxisARaw,
+                    SignalDefinitions.longitudinalAccelerationRaw,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
-            inertialAxisBRaw =
+            lateralAccelerationRaw =
                 rounded(
-                    SignalDefinitions.inertialAxisBRaw,
+                    SignalDefinitions.lateralAccelerationRaw,
+                    FAST_SIGNAL_MAX_AGE_MS,
+                ),
+            yawRateRaw =
+                rounded(
+                    SignalDefinitions.yawRateRaw,
                     FAST_SIGNAL_MAX_AGE_MS,
                 ),
             bodySensorRaw =
@@ -212,6 +235,15 @@ class VehicleSignalAdapter {
                     SignalDefinitions.driverSeatBeltWarning,
                     SLOW_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
+            isElectronicFaultActive =
+                boolean(
+                    SignalDefinitions.electronicFault,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) ?: false,
+            isCoolantOverheatWarningActive =
+                coolantTemperature?.let { it >= 110 } ?: false,
+            isLowFuelWarningActive =
+                fuelLevelEstimatedPercent?.let { it <= 15f } ?: false,
             arePositionLightsOn =
                 boolean(
                     SignalDefinitions.positionLights,
@@ -237,16 +269,10 @@ class VehicleSignalAdapter {
                     SignalDefinitions.rearFogLights,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
-            isLeftTurnSignalOn =
-                boolean(
-                    SignalDefinitions.leftTurnSignal,
-                    BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: false,
-            isRightTurnSignalOn =
-                boolean(
-                    SignalDefinitions.rightTurnSignal,
-                    BODY_SIGNAL_MAX_AGE_MS,
-                ) ?: false,
+            isLeftTurnSignalOn = leftTurnSignal ?: false,
+            isRightTurnSignalOn = rightTurnSignal ?: false,
+            areHazardLightsOn =
+                leftTurnSignal == true && rightTurnSignal == true,
             isFrontLeftDoorOpen =
                 boolean(
                     SignalDefinitions.doorFrontLeft,
@@ -283,11 +309,21 @@ class VehicleSignalAdapter {
                     SignalDefinitions.doorsLocked,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
+            isDoorLockSignalAvailable =
+                boolean(
+                    SignalDefinitions.doorsLocked,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) != null,
             isTrunkLocked =
                 boolean(
                     SignalDefinitions.trunkLocked,
                     BODY_SIGNAL_MAX_AGE_MS,
                 ) ?: false,
+            isTrunkLockSignalAvailable =
+                boolean(
+                    SignalDefinitions.trunkLocked,
+                    BODY_SIGNAL_MAX_AGE_MS,
+                ) != null,
             isIgnitionOn =
                 boolean(
                     SignalDefinitions.ignitionOn,

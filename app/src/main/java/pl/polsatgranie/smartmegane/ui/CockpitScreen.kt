@@ -26,6 +26,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -83,16 +85,29 @@ import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
 import pl.polsatgranie.smartmegane.domain.vehicle.GearEstimateStatus
 import pl.polsatgranie.smartmegane.domain.vehicle.IndicatorSeverity
 import pl.polsatgranie.smartmegane.domain.vehicle.GearGuidance
+import pl.polsatgranie.smartmegane.domain.vehicle.RpmSuitabilityState
+import pl.polsatgranie.smartmegane.domain.vehicle.RpmSuitabilityZone
+import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallGuidance
+import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallStatus
 import pl.polsatgranie.smartmegane.domain.vehicle.ShiftDirection
-import pl.polsatgranie.smartmegane.domain.vehicle.SweetSpotCalculator
-import pl.polsatgranie.smartmegane.domain.vehicle.SweetSpotState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleIndicator
+import pl.polsatgranie.smartmegane.domain.vehicle.VehiclePowerState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
+import pl.polsatgranie.smartmegane.domain.vehicle.ParkingSlopeGuidance
+import pl.polsatgranie.smartmegane.domain.vehicle.ParkingSlopeLevel
 import pl.polsatgranie.smartmegane.domain.vehicle.WiperMode
+import pl.polsatgranie.smartmegane.domain.trip.TripLiveStats
+import pl.polsatgranie.smartmegane.domain.trip.TripSummary
+import pl.polsatgranie.smartmegane.domain.signal.SignalDefinitions
+import pl.polsatgranie.smartmegane.domain.signal.SignalState
+import pl.polsatgranie.smartmegane.domain.signal.SignalValue
+import pl.polsatgranie.smartmegane.domain.phone.PhoneOrientation
 import pl.polsatgranie.smartmegane.domain.vehicle.hasCriticalWarning
 import pl.polsatgranie.smartmegane.domain.vehicle.hasNonCriticalWarning
 import pl.polsatgranie.smartmegane.domain.vehicle.isActive
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -112,37 +127,54 @@ private const val STEERING_DISPLAY_STEP_DEGREES = 2.5f
 private const val MAX_STEERING_WHEEL_ANGLE_DEGREES = 576f
 private const val MAX_ROAD_WHEEL_ANGLE_DEGREES = 32f
 private const val TAB_TITLE_VISIBLE_MS = 1_800L
-private const val STALK_DOUBLE_CLICK_MS = 310L
+private const val STALK_MULTI_CLICK_SETTLE_MS = 420L
+private const val FUEL_TANK_CAPACITY_LITERS = 60.0
 
 private enum class DashboardTab(val title: String) {
-    AUTOMATIC("Automat"),
-    VEHICLE("Auto"),
+    AUTOMATIC("Auto"),
+    VEHICLE("Samochód"),
     SPEED("Prędkość"),
-    DRIVETRAIN("Napęd"),
-    CHASSIS("Podwozie"),
-    BODY("Nadwozie"),
+    FUEL("Paliwo"),
     TRIP("Podróż"),
+    HISTORY("Historia"),
+    DIAGNOSTICS("Diagnostyka"),
 }
 
 @Composable
 fun CockpitScreen(
     vehicleState: VehicleState,
     gearGuidance: GearGuidance,
+    rpmSuitability: RpmSuitabilityState,
+    parkingSlopeGuidance: ParkingSlopeGuidance,
+    signalState: SignalState,
+    phoneOrientation: PhoneOrientation,
+    currentTrip: TripLiveStats,
+    tripHistory: List<TripSummary>,
+    lastTripSummary: TripSummary?,
     connectionState: UsbConnectionState,
     onReconnect: () -> Unit,
+    onLaunchAssistant: () -> Unit,
+    onLaunchMapsSplitScreen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by remember { mutableStateOf(DashboardTab.AUTOMATIC) }
+    var diagnosticsUnlocked by remember { mutableStateOf(false) }
     var navigationDirection by remember { mutableStateOf(1) }
     var tabTitleVisible by remember { mutableStateOf(true) }
     val stalkScope = rememberCoroutineScope()
     var pendingStalkClick by remember { mutableStateOf<Job?>(null) }
+    var stalkClickCount by remember { mutableStateOf(0) }
     var stalkWasPressed by remember { mutableStateOf(false) }
+    val visibleTabs = DashboardTab.entries.filter {
+        it != DashboardTab.DIAGNOSTICS || diagnosticsUnlocked || selectedTab == it
+    }
     val changeTab: (Int) -> Unit = { delta ->
-        val tabs = DashboardTab.entries
-        val currentIndex = selectedTab.ordinal
+        val tabs = visibleTabs
+        val currentIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
+        val leavingDiagnostics = selectedTab == DashboardTab.DIAGNOSTICS
         navigationDirection = if (delta >= 0) 1 else -1
         selectedTab = tabs[(currentIndex + delta + tabs.size) % tabs.size]
+        if (leavingDiagnostics) diagnosticsUnlocked = false
     }
     val stalkPressed =
         vehicleState.isTripComputerUpPressed ||
@@ -155,55 +187,38 @@ fun CockpitScreen(
     }
     LaunchedEffect(stalkPressed) {
         if (stalkPressed && !stalkWasPressed) {
-            val pending = pendingStalkClick
-            if (pending?.isActive == true) {
-                pending.cancel()
-                pendingStalkClick = null
-                changeTab(-1)
-            } else {
-                pendingStalkClick = stalkScope.launch {
-                    delay(STALK_DOUBLE_CLICK_MS)
-                    changeTab(1)
-                    pendingStalkClick = null
+            stalkClickCount += 1
+            pendingStalkClick?.cancel()
+            pendingStalkClick = stalkScope.launch {
+                delay(STALK_MULTI_CLICK_SETTLE_MS)
+                when (stalkClickCount) {
+                    1 -> changeTab(1)
+                    2 -> changeTab(-1)
+                    3 -> onLaunchAssistant()
+                    5 -> onLaunchMapsSplitScreen()
+                    10 -> {
+                        diagnosticsUnlocked = true
+                        navigationDirection = 1
+                        selectedTab = DashboardTab.DIAGNOSTICS
+                    }
                 }
+                stalkClickCount = 0
+                pendingStalkClick = null
             }
         }
         stalkWasPressed = stalkPressed
     }
 
-    val transition = rememberInfiniteTransition(label = "dashboardPulse")
-    val turnPulse by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = keyframes {
-                durationMillis = 660
-                0f at 0
-                1f at 85 using FastOutSlowInEasing
-                1f at 360
-                0f at 500 using FastOutSlowInEasing
-                0f at 660
-            },
-        ),
-        label = "turnSignal",
+    val leftTurnPulse by animateFloatAsState(
+        targetValue = if (vehicleState.isLeftTurnSignalOn) 1f else 0f,
+        animationSpec = tween(if (vehicleState.isLeftTurnSignalOn) 65 else 115),
+        label = "leftTurnCanPhase",
     )
-    val sweetSpot = remember(
-        vehicleState.speedKphPrecise,
-        vehicleState.speedKph,
-        vehicleState.engineRpmPrecise,
-        vehicleState.engineRpm,
-        vehicleState.isClutchPedalPressed,
-        gearGuidance.revMatchGear,
-        gearGuidance.revMatchConfidence,
-    ) {
-        SweetSpotCalculator.calculate(
-            speedKph = vehicleState.speedKphPrecise ?: vehicleState.speedKph.toDouble(),
-            engineRpm = vehicleState.engineRpmPrecise ?: vehicleState.engineRpm.toDouble(),
-            isClutchPressed = vehicleState.isClutchPedalPressed,
-            preferredGear = gearGuidance.revMatchGear,
-            guidanceConfidence = gearGuidance.revMatchConfidence,
-        )
-    }
+    val rightTurnPulse by animateFloatAsState(
+        targetValue = if (vehicleState.isRightTurnSignalOn) 1f else 0f,
+        animationSpec = tween(if (vehicleState.isRightTurnSignalOn) 65 else 115),
+        label = "rightTurnCanPhase",
+    )
 
     BoxWithConstraints(
         modifier = modifier.background(CanvasBlack),
@@ -213,11 +228,13 @@ fun CockpitScreen(
         DashboardBackdrop()
         EdgeGlow(
             state = vehicleState,
-            turnPulse = turnPulse,
+            leftTurnPulse = leftTurnPulse,
+            rightTurnPulse = rightTurnPulse,
         )
-        SweetSpotRail(
-            state = sweetSpot,
+        RpmSuitabilityRail(
+            state = rpmSuitability,
             gearGuidance = gearGuidance,
+            showRpmValue = selectedTab == DashboardTab.VEHICLE,
             uiScale = uiScale,
             modifier = Modifier
                 .width((43f * uiScale).dp)
@@ -236,7 +253,8 @@ fun CockpitScreen(
         ) {
             TopSignalStrip(
                 state = vehicleState,
-                pulse = turnPulse,
+                leftPulse = leftTurnPulse,
+                rightPulse = rightTurnPulse,
                 uiScale = uiScale,
             )
             AnimatedContent(
@@ -282,11 +300,21 @@ fun CockpitScreen(
                 DashboardTabContent(
                     tab = tab,
                     state = vehicleState,
+                    currentTrip = currentTrip,
+                    tripHistory = tripHistory,
+                    lastTripSummary = lastTripSummary,
+                    parkingSlopeGuidance = parkingSlopeGuidance,
+                    rpmSuitability = rpmSuitability,
+                    gearGuidance = gearGuidance,
+                    signalState = signalState,
+                    phoneOrientation = phoneOrientation,
+                    connectionState = connectionState,
                     uiScale = uiScale,
                 )
             }
             DashboardTabTitle(
                 selectedTab = selectedTab,
+                tabs = visibleTabs,
                 visible = tabTitleVisible,
                 uiScale = uiScale,
             )
@@ -294,12 +322,14 @@ fun CockpitScreen(
                 state = vehicleState,
                 connectionState = connectionState,
                 onReconnect = onReconnect,
+                showPreciseValues = selectedTab == DashboardTab.VEHICLE,
                 uiScale = uiScale,
             )
         }
         TurnSignalEdgeStroke(
             state = vehicleState,
-            turnPulse = turnPulse,
+            leftTurnPulse = leftTurnPulse,
+            rightTurnPulse = rightTurnPulse,
         )
     }
 }
@@ -355,7 +385,8 @@ private fun DashboardBackdrop() {
 @Composable
 private fun TopSignalStrip(
     state: VehicleState,
-    pulse: Float,
+    leftPulse: Float,
+    rightPulse: Float,
     uiScale: Float,
 ) {
     Row(
@@ -371,8 +402,8 @@ private fun TopSignalStrip(
         SignalIcon(
             indicator = VehicleIndicator.LEFT_TURN,
             active = state.isLeftTurnSignalOn,
-            activeTint = Green,
-            pulse = pulse,
+            activeTint = if (state.areHazardLightsOn) Amber else Green,
+            pulse = leftPulse,
             size = uiScale,
         )
         SignalIcon(
@@ -413,8 +444,8 @@ private fun TopSignalStrip(
         SignalIcon(
             indicator = VehicleIndicator.RIGHT_TURN,
             active = state.isRightTurnSignalOn,
-            activeTint = Green,
-            pulse = pulse,
+            activeTint = if (state.areHazardLightsOn) Amber else Green,
+            pulse = rightPulse,
             size = uiScale,
         )
     }
@@ -429,7 +460,8 @@ private fun SignalIcon(
     size: Float,
 ) {
     val isTurn = indicator == VehicleIndicator.LEFT_TURN ||
-        indicator == VehicleIndicator.RIGHT_TURN
+        indicator == VehicleIndicator.RIGHT_TURN ||
+        indicator == VehicleIndicator.HAZARD
     val strength = if (isTurn && active) pulse else if (active) 1f else 0f
     val tint = if (active) {
         activeTint.copy(alpha = 0.32f + strength * 0.68f)
@@ -471,12 +503,17 @@ private fun SignalIcon(
 private fun DashboardTabContent(
     tab: DashboardTab,
     state: VehicleState,
+    currentTrip: TripLiveStats,
+    tripHistory: List<TripSummary>,
+    lastTripSummary: TripSummary?,
+    parkingSlopeGuidance: ParkingSlopeGuidance,
+    rpmSuitability: RpmSuitabilityState,
+    gearGuidance: GearGuidance,
+    signalState: SignalState,
+    phoneOrientation: PhoneOrientation,
+    connectionState: UsbConnectionState,
     uiScale: Float,
 ) {
-    val showsWarningTray =
-        tab == DashboardTab.AUTOMATIC ||
-            tab == DashboardTab.VEHICLE ||
-            tab == DashboardTab.SPEED
     Column(Modifier.fillMaxSize()) {
         Box(
             contentAlignment = Alignment.Center,
@@ -488,6 +525,8 @@ private fun DashboardTabContent(
                 DashboardTab.AUTOMATIC ->
                     PrimaryReadout(
                         state = state,
+                        lastTripSummary = lastTripSummary,
+                        parkingSlopeGuidance = parkingSlopeGuidance,
                         uiScale = uiScale,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -495,6 +534,7 @@ private fun DashboardTabContent(
                 DashboardTab.VEHICLE ->
                     VehicleDetailReadout(
                         state = state,
+                        parkingSlopeGuidance = parkingSlopeGuidance,
                         uiScale = uiScale,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -506,23 +546,10 @@ private fun DashboardTabContent(
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                DashboardTab.DRIVETRAIN ->
-                    DrivetrainReadout(
+                DashboardTab.FUEL ->
+                    FuelReadout(
                         state = state,
-                        uiScale = uiScale,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-
-                DashboardTab.CHASSIS ->
-                    ChassisReadout(
-                        state = state,
-                        uiScale = uiScale,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-
-                DashboardTab.BODY ->
-                    BodyReadout(
-                        state = state,
+                        trip = currentTrip,
                         uiScale = uiScale,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -530,29 +557,50 @@ private fun DashboardTabContent(
                 DashboardTab.TRIP ->
                     TripReadout(
                         state = state,
+                        trip = currentTrip,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.HISTORY ->
+                    TripHistoryReadout(
+                        history = tripHistory,
+                        uiScale = uiScale,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                DashboardTab.DIAGNOSTICS ->
+                    DiagnosticsReadout(
+                        state = state,
+                        gearGuidance = gearGuidance,
+                        rpmSuitability = rpmSuitability,
+                        parkingSlopeGuidance = parkingSlopeGuidance,
+                        signalState = signalState,
+                        phoneOrientation = phoneOrientation,
+                        connectionState = connectionState,
+                        trip = currentTrip,
                         uiScale = uiScale,
                         modifier = Modifier.fillMaxSize(),
                     )
             }
         }
-        if (showsWarningTray) {
-            WarningTray(
-                state = state,
-                uiScale = uiScale,
-            )
-        }
+        WarningTray(
+            state = state,
+            uiScale = uiScale,
+        )
     }
 }
 
 @Composable
 private fun DashboardTabTitle(
     selectedTab: DashboardTab,
+    tabs: List<DashboardTab>,
     visible: Boolean,
     uiScale: Float,
 ) {
-    val tabs = DashboardTab.entries
-    val previous = tabs[(selectedTab.ordinal - 1 + tabs.size) % tabs.size]
-    val next = tabs[(selectedTab.ordinal + 1) % tabs.size]
+    val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
+    val previous = tabs[(selectedIndex - 1 + tabs.size) % tabs.size]
+    val next = tabs[(selectedIndex + 1) % tabs.size]
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -618,6 +666,7 @@ private fun TabTitleText(
 @Composable
 private fun VehicleDetailReadout(
     state: VehicleState,
+    parkingSlopeGuidance: ParkingSlopeGuidance,
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
@@ -625,71 +674,150 @@ private fun VehicleDetailReadout(
         contentAlignment = Alignment.Center,
         modifier = modifier.padding(horizontal = (5f * uiScale).dp),
     ) {
+        VehiclePowerHalo(
+            powerState = state.powerState,
+            modifier = Modifier
+                .fillMaxHeight(0.92f)
+                .aspectRatio(0.72f),
+        )
         VehicleStatusSymbol(
             state = state,
+            forceSteeringGuide = true,
             modifier = Modifier
                 .fillMaxHeight(0.88f)
                 .aspectRatio(0.55f),
         )
-        Column(
-            verticalArrangement = Arrangement.spacedBy((16f * uiScale).dp),
-            modifier = Modifier.align(Alignment.CenterStart),
-        ) {
-            DetailMetric(
-                label = "OBROTY",
-                value = state.engineRpmPrecise
-                    ?.let { "${formatOneDecimal(it)} rpm" }
-                    ?: "${state.engineRpm} rpm",
-                tint = Ink,
-                uiScale = uiScale,
-            )
-            DetailMetric(
-                label = "PALIWO RAW",
-                value = state.fuelLevelRaw?.toString() ?: "—",
-                tint = Amber,
-                uiScale = uiScale,
-            )
-            DetailMetric(
-                label = "PRĘDKOŚĆ",
-                value = state.speedKphPrecise
-                    ?.let { "${formatTwoDecimals(it)} km/h" }
-                    ?: "${state.speedKph} km/h",
-                tint = Ink,
-                uiScale = uiScale,
-            )
-        }
-        Column(
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy((16f * uiScale).dp),
-            modifier = Modifier.align(Alignment.CenterEnd),
-        ) {
-            DetailMetric(
-                label = "SILNIK",
-                value = "${state.coolantTemperatureCelsius}°C",
-                tint = if (state.coolantTemperatureCelsius >= 105) Red else Blue,
-                uiScale = uiScale,
-                alignEnd = true,
-            )
-            DetailMetric(
-                label = "ZEWNĄTRZ",
-                value = state.outsideTemperatureCelsius
-                    ?.let { "$it°C" }
-                    ?: "—",
-                tint = Blue,
-                uiScale = uiScale,
-                alignEnd = true,
-            )
-            DetailMetric(
-                label = "KIEROWNICA",
-                value = state.steeringWheelAngleDegrees
-                    ?.let { "${formatOneDecimal(it.toDouble())}°" }
-                    ?: "—",
-                tint = steeringTint(state.steeringWheelAngleDegrees),
-                uiScale = uiScale,
-                alignEnd = true,
-            )
-        }
+        ParkingSlopeOverlay(
+            guidance = parkingSlopeGuidance,
+            uiScale = uiScale,
+            modifier = Modifier
+                .fillMaxHeight(0.92f)
+                .aspectRatio(0.72f),
+        )
     }
+}
+
+@Composable
+private fun VehiclePowerHalo(
+    powerState: VehiclePowerState,
+    modifier: Modifier = Modifier,
+) {
+    val tint = when (powerState) {
+        VehiclePowerState.OFF -> Muted
+        VehiclePowerState.CAN_AWAKE -> Blue
+        VehiclePowerState.IGNITION_ON -> Amber
+        VehiclePowerState.ENGINE_RUNNING -> Green
+    }
+    val targetAlpha = when (powerState) {
+        VehiclePowerState.OFF -> 0.08f
+        VehiclePowerState.CAN_AWAKE -> 0.14f
+        VehiclePowerState.IGNITION_ON -> 0.18f
+        VehiclePowerState.ENGINE_RUNNING -> 0.22f
+    }
+    val alpha by animateFloatAsState(
+        targetValue = targetAlpha,
+        animationSpec = tween(420),
+        label = "vehiclePowerHalo",
+    )
+    Canvas(modifier) {
+        drawOval(
+            brush = Brush.radialGradient(
+                listOf(tint.copy(alpha = alpha), Color.Transparent),
+                center = center,
+                radius = size.maxDimension * 0.58f,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ParkingSlopeOverlay(
+    guidance: ParkingSlopeGuidance,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    if (!guidance.isAvailable) return
+    val lateralTint = parkingSlopeTint(guidance.lateralLevel)
+    val longitudinalTint = parkingSlopeTint(guidance.longitudinalLevel)
+    Box(modifier = modifier.semantics {
+        contentDescription =
+            "Nachylenie wzdłuż ${formatOneDecimal(guidance.vehiclePitchDegrees.toDouble())} stopnia, " +
+                "wszerz ${formatOneDecimal(guidance.vehicleRollDegrees.toDouble())} stopnia"
+    }) {
+        Canvas(Modifier.fillMaxSize()) {
+            val topY = (size.height * 0.07f).roundToInt().toFloat()
+            val rightX = (size.width * 0.91f).roundToInt().toFloat()
+            val horizontalStart = (size.width * 0.12f).roundToInt().toFloat()
+            val horizontalEnd = (size.width * 0.88f).roundToInt().toFloat()
+            val verticalStart = (size.height * 0.14f).roundToInt().toFloat()
+            val verticalEnd = (size.height * 0.88f).roundToInt().toFloat()
+            val shadowWidth = (3.4.dp.toPx() * uiScale)
+                .roundToInt().coerceAtLeast(1).toFloat()
+            val lineWidth = (1.35.dp.toPx() * uiScale)
+                .roundToInt().coerceAtLeast(1).toFloat()
+            drawRect(
+                color = Color.Black.copy(alpha = 0.50f),
+                topLeft = Offset(horizontalStart, topY - shadowWidth / 2f),
+                size = Size(horizontalEnd - horizontalStart, shadowWidth),
+            )
+            drawRect(
+                color = lateralTint,
+                topLeft = Offset(horizontalStart, topY - lineWidth / 2f),
+                size = Size(horizontalEnd - horizontalStart, lineWidth),
+            )
+            drawRect(
+                color = Color.Black.copy(alpha = 0.50f),
+                topLeft = Offset(rightX - shadowWidth / 2f, verticalStart),
+                size = Size(shadowWidth, verticalEnd - verticalStart),
+            )
+            drawRect(
+                color = longitudinalTint,
+                topLeft = Offset(rightX - lineWidth / 2f, verticalStart),
+                size = Size(lineWidth, verticalEnd - verticalStart),
+            )
+        }
+        Text(
+            text = formatSignedDegrees(guidance.vehicleRollDegrees),
+            color = Ink.copy(alpha = 0.66f),
+            fontSize = (7.5f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .graphicsLayer {
+                    translationY = -8.dp.toPx() * uiScale
+                }
+                .background(CanvasBlack.copy(alpha = 0.78f), RoundedCornerShape(4.dp))
+                .padding(horizontal = (3f * uiScale).dp),
+        )
+        Text(
+            text = formatSignedDegrees(guidance.vehiclePitchDegrees),
+            color = Ink.copy(alpha = 0.66f),
+            fontSize = (7.5f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .graphicsLayer {
+                    translationX = 8.dp.toPx() * uiScale
+                }
+                .background(CanvasBlack.copy(alpha = 0.78f), RoundedCornerShape(4.dp))
+                .padding(horizontal = (3f * uiScale).dp),
+        )
+    }
+}
+
+private fun formatSignedDegrees(value: Float): String {
+    val rounded = value.roundToInt()
+    return when {
+        rounded > 0 -> "+$rounded°"
+        else -> "$rounded°"
+    }
+}
+
+private fun parkingSlopeTint(level: ParkingSlopeLevel): Color = when (level) {
+    ParkingSlopeLevel.FLAT -> Green
+    ParkingSlopeLevel.GEAR_RECOMMENDED -> Amber
+    ParkingSlopeLevel.STEEP -> Red
+    ParkingSlopeLevel.UNAVAILABLE -> Muted
 }
 
 @Composable
@@ -855,19 +983,39 @@ private fun ChassisReadout(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround,
         ) {
-            DetailMetric("KOŁO A1", raw(state.wheelPairAFirstRaw), Ink, uiScale)
-            DetailMetric("KOŁO A2", raw(state.wheelPairASecondRaw), Ink, uiScale)
-            DetailMetric("KOŁO B1", raw(state.wheelPairBFirstRaw), Ink, uiScale)
-            DetailMetric("KOŁO B2", raw(state.wheelPairBSecondRaw), Ink, uiScale)
+            DetailMetric(
+                "A PRAWE",
+                state.wheelPairARightSpeedKph?.let { "${formatOneDecimal(it)} km/h" } ?: "—",
+                Ink,
+                uiScale,
+            )
+            DetailMetric(
+                "A LEWE",
+                state.wheelPairALeftSpeedKph?.let { "${formatOneDecimal(it)} km/h" } ?: "—",
+                Ink,
+                uiScale,
+            )
+            DetailMetric(
+                "B PRAWE",
+                state.wheelPairBRightSpeedKph?.let { "${formatOneDecimal(it)} km/h" } ?: "—",
+                Ink,
+                uiScale,
+            )
+            DetailMetric(
+                "B LEWE",
+                state.wheelPairBLeftSpeedKph?.let { "${formatOneDecimal(it)} km/h" } ?: "—",
+                Ink,
+                uiScale,
+            )
         }
         Spacer(Modifier.height((14f * uiScale).dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround,
         ) {
-            DetailMetric("YAW RAW", raw(state.yawSensorRaw), Blue, uiScale)
-            DetailMetric("OŚ A", raw(state.inertialAxisARaw), Blue, uiScale)
-            DetailMetric("OŚ B", raw(state.inertialAxisBRaw), Blue, uiScale)
+            DetailMetric("WZDŁUŻNE", raw(state.longitudinalAccelerationRaw), Blue, uiScale)
+            DetailMetric("POPRZECZNE", raw(state.lateralAccelerationRaw), Blue, uiScale)
+            DetailMetric("YAW", raw(state.yawRateRaw), Blue, uiScale)
             InlineState("ESP OFF", state.isEspAsrDisabled, uiScale)
         }
     }
@@ -906,15 +1054,22 @@ private fun BodyReadout(
                 uiScale,
             )
             DetailMetric(
-                "ZAMKI",
-                if (state.areDoorsLocked) "zamknięte" else "otwarte",
+                "ZAMEK DRZWI",
+                if (!state.isDoorLockSignalAvailable) "—" else if (state.areDoorsLocked) "zaryglowane" else "otwarte",
                 if (state.areDoorsLocked) Green else Amber,
                 uiScale,
             )
             DetailMetric(
                 "KLAPA",
-                if (state.isTrunkOpen) "otwarta" else "zamknięta",
-                if (state.isTrunkOpen) Amber else Green,
+                when {
+                    state.isTrunkOpen -> "otwarta"
+                    !state.isTrunkLockSignalAvailable -> "—"
+                    state.isTrunkLocked -> "zaryglowana"
+                    else -> "odryglowana"
+                },
+                if (state.isTrunkOpen ||
+                    (state.isTrunkLockSignalAvailable && !state.isTrunkLocked)
+                ) Amber else Green,
                 uiScale,
             )
         }
@@ -932,8 +1087,8 @@ private fun BodyReadout(
             )
             DetailMetric(
                 "TYLNA SZYBA",
-                if (state.isRearDefrostOn) "ON" else "OFF",
-                if (state.isRearDefrostOn) Blue else Muted,
+                if (state.isRearDefrostCommandActive) "IMPULS" else "—",
+                if (state.isRearDefrostCommandActive) Blue else Muted,
                 uiScale,
                 alignEnd = true,
             )
@@ -951,86 +1106,694 @@ private fun BodyReadout(
 @Composable
 private fun TripReadout(
     state: VehicleState,
+    trip: TripLiveStats,
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
-    val distanceText = state.distanceSinceStartMeters?.let { distance ->
-        if (distance >= 1_000.0) {
-            "${formatTwoDecimals(distance / 1_000.0)} km"
-        } else {
-            "${distance.roundToInt()} m"
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(horizontal = (9f * uiScale).dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = formatDuration(trip.durationMs),
+                    color = Ink,
+                    fontSize = (27f * uiScale).sp,
+                    lineHeight = (29f * uiScale).sp,
+                    fontWeight = FontWeight.Light,
+                    style = TextStyle(fontFeatureSettings = "tnum"),
+                )
+                Text("CZAS", color = Muted.copy(alpha = 0.48f), fontSize = (6f * uiScale).sp)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = formatTwoDecimals(trip.distanceKm),
+                    color = Green,
+                    fontSize = (27f * uiScale).sp,
+                    lineHeight = (29f * uiScale).sp,
+                    fontWeight = FontWeight.Light,
+                )
+                Text("KILOMETRY", color = Muted.copy(alpha = 0.48f), fontSize = (6f * uiScale).sp)
+            }
         }
-    } ?: "—"
+        Spacer(Modifier.height((7f * uiScale).dp))
+        TripTimeStrip(trip = trip, uiScale = uiScale)
+        Spacer(Modifier.height((10f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric(
+                "SPALANIE",
+                trip.averageConsumptionLitersPer100Km?.let { "${formatOneDecimal(it)} l/100" } ?: "—",
+                Amber,
+                uiScale,
+            )
+            DetailMetric(
+                "PALIWO",
+                "${formatTwoDecimals(trip.fuelUsedLiters)} L",
+                Amber,
+                uiScale,
+            )
+            DetailMetric(
+                "ŚR. W RUCHU",
+                "${formatOneDecimal(trip.averageMovingSpeedKph)} km/h",
+                Ink,
+                uiScale,
+            )
+        }
+        Spacer(Modifier.height((9f * uiScale).dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            DetailMetric(
+                "OBROTY",
+                "${trip.averageRpm.roundToInt()} / ${trip.maxRpm}",
+                Blue,
+                uiScale,
+            )
+            DetailMetric(
+                "MAKS.",
+                "${formatOneDecimal(trip.maxSpeedKph)} km/h",
+                Ink,
+                uiScale,
+            )
+            DetailMetric(
+                "POSTÓJ",
+                formatDurationCompact(trip.idleDurationMs),
+                Muted,
+                uiScale,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FuelReadout(
+    state: VehicleState,
+    trip: TripLiveStats,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val estimatedLiters =
+        state.fuelLevelEstimatedPercent?.let { it / 100.0 * FUEL_TANK_CAPACITY_LITERS }
+    val estimatedRangeKm = if (estimatedLiters != null &&
+        trip.averageConsumptionLitersPer100Km != null &&
+        trip.averageConsumptionLitersPer100Km > 0.1
+    ) {
+        estimatedLiters / trip.averageConsumptionLitersPer100Km * 100.0
+    } else null
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
         modifier = modifier.padding(horizontal = (9f * uiScale).dp),
     ) {
         Text(
-            text = distanceText,
-            color = Ink,
-            fontSize = (34f * uiScale).sp,
-            lineHeight = (36f * uiScale).sp,
+            text = state.fuelLevelEstimatedPercent?.let { "${it.roundToInt()}%" } ?: "—",
+            color = Amber,
+            fontSize = (38f * uiScale).sp,
+            lineHeight = (40f * uiScale).sp,
             fontWeight = FontWeight.Light,
             style = TextStyle(fontFeatureSettings = "tnum"),
         )
         Text(
-            text = "OD URUCHOMIENIA",
-            color = Muted.copy(alpha = 0.52f),
+            text = estimatedLiters?.let { "${formatOneDecimal(it)} Z 60,0 L" }
+                ?: "POZIOM NIEDOSTĘPNY",
+            color = Muted.copy(alpha = 0.58f),
             fontSize = (7f * uiScale).sp,
             letterSpacing = (1f * uiScale).sp,
         )
-        Spacer(Modifier.height((16f * uiScale).dp))
+        Spacer(Modifier.height((8f * uiScale).dp))
+        ThinLevelBar(
+            progress = state.fuelLevelEstimatedPercent?.div(100f) ?: 0f,
+            tint = if ((state.fuelLevelEstimatedPercent ?: 0f) <= 15f) Red else Amber,
+            modifier = Modifier.fillMaxWidth(0.82f),
+        )
+        Spacer(Modifier.height((11f * uiScale).dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround,
         ) {
             DetailMetric(
-                "PALIWO",
-                state.fuelUsedSinceStartLiters
-                    ?.let { "${formatFourDecimals(it)} L" }
+                "CHWILOWE / H",
+                trip.instantConsumptionLitersPer100Km
+                    ?.let { "${formatOneDecimal(it)} l/100" }
+                    ?: trip.instantFuelLitersPerHour
+                        ?.let { "${formatOneDecimal(it)} l/h" }
                     ?: "—",
                 Amber,
                 uiScale,
             )
             DetailMetric(
-                "PRZEBIEG",
-                "${formatOdometer(state.odometerKm)} km",
-                Ink,
+                "ZASIĘG",
+                estimatedRangeKm?.let { "~${it.roundToInt()} km" } ?: "—",
+                Green,
                 uiScale,
             )
             DetailMetric(
-                "CZAS POJAZDU",
-                state.vehicleAgeMinutes
-                    ?.let { "${formatOdometer(it / 60)} h" }
+                "ŚREDNIE",
+                trip.averageConsumptionLitersPer100Km
+                    ?.let { "${formatOneDecimal(it)} l/100" }
                     ?: "—",
                 Ink,
                 uiScale,
             )
         }
-        Spacer(Modifier.height((15f * uiScale).dp))
+        Spacer(Modifier.height((8f * uiScale).dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DetailMetric("ZUŻYTE", "${formatThreeDecimals(trip.fuelUsedLiters)} L", Ink, uiScale)
+            DetailMetric(
+                "OD STARTU",
+                if (trip.startFuelPercent != null && trip.currentFuelPercent != null) {
+                    "-${formatOneDecimal((trip.startFuelPercent - trip.currentFuelPercent).coerceAtLeast(0f).toDouble())}%"
+                } else "—",
+                Muted,
+                uiScale,
+            )
+            DetailMetric("RAW", state.fuelLevelRaw?.toString() ?: "—", Muted, uiScale)
+        }
+    }
+}
+
+@Composable
+private fun TripTimeStrip(trip: TripLiveStats, uiScale: Float) {
+    val total = (trip.movingDurationMs + trip.idleDurationMs).coerceAtLeast(1L)
+    val moving = trip.movingDurationMs.toFloat() / total
+    Canvas(Modifier.fillMaxWidth(0.82f).height((5f * uiScale).dp)) {
+        drawRoundRect(Color.White.copy(alpha = 0.08f), cornerRadius = CornerRadius(size.height))
+        drawRoundRect(
+            brush = Brush.horizontalGradient(listOf(Green.copy(alpha = 0.55f), Green)),
+            size = Size(size.width * moving, size.height),
+            cornerRadius = CornerRadius(size.height),
+        )
+    }
+}
+
+@Composable
+private fun TripSummaryReadout(
+    summary: TripSummary,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(horizontal = (9f * uiScale).dp),
+    ) {
+        Text(
+            text = "PODSUMOWANIE",
+            color = Green.copy(alpha = 0.84f),
+            fontSize = (8f * uiScale).sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = (1.3f * uiScale).sp,
+        )
+        Spacer(Modifier.height((9f * uiScale).dp))
+        Text(
+            text = "${formatTwoDecimals(summary.distanceKm)} km",
+            color = Ink,
+            fontSize = (34f * uiScale).sp,
+            fontWeight = FontWeight.Light,
+        )
+        Spacer(Modifier.height((12f * uiScale).dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceAround,
         ) {
+            DetailMetric("CZAS", formatDuration(summary.durationMs), Ink, uiScale)
             DetailMetric(
-                "ZEWNĄTRZ",
-                state.outsideTemperatureCelsius?.let { "$it°C" } ?: "—",
-                Blue,
+                "SPALANIE",
+                summary.averageConsumptionLitersPer100Km
+                    ?.let { "${formatOneDecimal(it)} l/100" }
+                    ?: "—",
+                Amber,
                 uiScale,
             )
             DetailMetric(
-                "SILNIK",
-                "${state.coolantTemperatureCelsius}°C",
-                if (state.coolantTemperatureCelsius >= 105) Red else Blue,
+                "ŚREDNIA",
+                "${formatOneDecimal(summary.averageSpeedKph)} km/h",
+                Ink,
                 uiScale,
             )
-            DetailMetric(
-                "SERWIS RAW",
-                raw(state.serviceStatusRaw),
-                Muted,
-                uiScale,
+        }
+        Spacer(Modifier.height((7f * uiScale).dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DetailMetric("PALIWO", "${formatThreeDecimals(summary.fuelUsedLiters)} L", Amber, uiScale)
+            DetailMetric("MAKS.", "${formatOneDecimal(summary.maxSpeedKph)} km/h", Ink, uiScale)
+            DetailMetric("POSTÓJ", formatDurationCompact(summary.idleDurationMs), Muted, uiScale)
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticsReadout(
+    state: VehicleState,
+    gearGuidance: GearGuidance,
+    rpmSuitability: RpmSuitabilityState,
+    parkingSlopeGuidance: ParkingSlopeGuidance,
+    signalState: SignalState,
+    phoneOrientation: PhoneOrientation,
+    connectionState: UsbConnectionState,
+    trip: TripLiveStats,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val apiRows = remember(state) { diagnosticFields(state) }
+    val gearRows = remember(gearGuidance) { diagnosticFields(gearGuidance) }
+    val rpmRows = remember(rpmSuitability) { diagnosticFields(rpmSuitability) }
+    val slopeRows = remember(parkingSlopeGuidance) { diagnosticFields(parkingSlopeGuidance) }
+    val phoneRows = remember(phoneOrientation) { diagnosticFields(phoneOrientation) }
+    val tripRows = remember(trip) { diagnosticFields(trip) }
+    val signalLabels = remember {
+        SignalDefinitions.specs.associate { it.key.id to it.key.label }
+    }
+    val rawRows = remember(signalState) {
+        signalState.values.entries.sortedBy { it.key }.map { (key, value) ->
+            val timestamp = signalState.timestampsMs[key]
+            "${signalLabels[key] ?: "Nieznany sygnał"} [$key]" to
+                "${polishSignalValue(value)}${timestamp?.let { "  •  $it ms" } ?: ""}"
+        }
+    }
+    Column(
+        verticalArrangement = Arrangement.spacedBy((8f * uiScale).dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = (7f * uiScale).dp, vertical = (4f * uiScale).dp),
+    ) {
+        DiagnosticSection(
+            title = "POŁĄCZENIE",
+            rows = listOf("Stan USB" to polishUsbConnectionState(connectionState)),
+            uiScale = uiScale,
+        )
+        DiagnosticSection("API POJAZDU", apiRows, uiScale)
+        DiagnosticSection("BIEG I ZAKRES RPM", gearRows + rpmRows, uiScale)
+        DiagnosticSection("NACHYLENIE", slopeRows + phoneRows, uiScale)
+        DiagnosticSection("PODRÓŻ", tripRows, uiScale)
+        DiagnosticSection("WSZYSTKIE SYGNAŁY CAN", rawRows, uiScale)
+    }
+}
+
+@Composable
+private fun DiagnosticSection(
+    title: String,
+    rows: List<Pair<String, String>>,
+    uiScale: Float,
+) {
+    Text(
+        text = title,
+        color = Blue.copy(alpha = 0.84f),
+        fontSize = (7.2f * uiScale).sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = (0.8f * uiScale).sp,
+    )
+    rows.forEach { (name, value) ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = name,
+                color = Muted.copy(alpha = 0.68f),
+                fontSize = (6.7f * uiScale).sp,
+                modifier = Modifier.weight(1f),
             )
+            Text(
+                text = value,
+                color = Ink.copy(alpha = 0.86f),
+                fontSize = (6.7f * uiScale).sp,
+                fontWeight = FontWeight.Medium,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+                modifier = Modifier.weight(1.15f),
+            )
+        }
+    }
+}
+
+private fun diagnosticFields(
+    value: Any,
+    parentLabel: String? = null,
+): List<Pair<String, String>> = value.javaClass.declaredFields
+    .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+    .flatMap { field ->
+        runCatching {
+            field.isAccessible = true
+            val fieldValue = field.get(value)
+            val label = listOfNotNull(parentLabel, polishDiagnosticLabel(field.name))
+                .joinToString(" — ")
+            if (fieldValue != null &&
+                fieldValue !is Number &&
+                fieldValue !is Boolean &&
+                fieldValue !is CharSequence &&
+                fieldValue !is Enum<*> &&
+                fieldValue !is IntRange &&
+                fieldValue.javaClass.name.startsWith("pl.polsatgranie.smartmegane")
+            ) {
+                diagnosticFields(fieldValue, label)
+            } else {
+                listOf(label to polishDiagnosticValue(fieldValue))
+            }
+        }.getOrDefault(emptyList())
+    }
+    .sortedBy { it.first }
+
+private fun polishUsbConnectionState(state: UsbConnectionState): String = when (state) {
+    UsbConnectionState.Disconnected -> "rozłączono"
+    UsbConnectionState.Searching -> "wyszukiwanie urządzenia"
+    UsbConnectionState.NoDevice -> "brak urządzenia"
+    is UsbConnectionState.PermissionRequired -> "oczekiwanie na zgodę: ${state.deviceName}"
+    is UsbConnectionState.PermissionDenied -> "brak zgody: ${state.deviceName}"
+    is UsbConnectionState.Connected -> "połączono: ${state.deviceName}"
+    is UsbConnectionState.Error -> "błąd: ${state.message}"
+}
+
+private fun polishSignalValue(value: SignalValue): String = when (value) {
+    is SignalValue.Bool -> if (value.value) "aktywny" else "nieaktywny"
+    is SignalValue.Enum -> polishEnumValue(value.label)
+    is SignalValue.Number -> {
+        val number = if (value.value % 1.0 == 0.0) {
+            value.value.toLong().toString()
+        } else {
+            String.format(Locale("pl", "PL"), "%.2f", value.value)
+        }
+        if (value.unit.isNullOrBlank()) number else "$number ${value.unit}"
+    }
+}
+
+private fun polishDiagnosticValue(value: Any?): String = when (value) {
+    null -> "brak"
+    is Boolean -> if (value) "tak" else "nie"
+    is Enum<*> -> polishEnumValue(value.name)
+    is IntRange -> "${value.first}–${value.last}"
+    is Float -> String.format(Locale("pl", "PL"), "%.2f", value)
+    is Double -> String.format(Locale("pl", "PL"), "%.2f", value)
+    else -> value.toString()
+}
+
+private fun polishEnumValue(value: String): String = when (value.uppercase(Locale.ROOT)) {
+    "OFF" -> "wyłączony"
+    "INTERMITTENT" -> "przerywany"
+    "LOW" -> "wolny"
+    "HIGH" -> "szybki"
+    "CAN_AWAKE" -> "magistrala CAN aktywna"
+    "IGNITION_ON" -> "zapłon włączony"
+    "ENGINE_RUNNING" -> "silnik pracuje"
+    "NONE" -> "brak"
+    "UP" -> "zmiana w górę"
+    "DOWN" -> "redukcja"
+    "COUPLED" -> "sprzęgło połączone"
+    "CLUTCH_DISENGAGED" -> "sprzęgło rozłączone"
+    "SHIFTING" -> "zmiana biegu"
+    "STATIONARY" -> "postój"
+    "AMBIGUOUS" -> "niejednoznaczny"
+    "SIGNAL_UNAVAILABLE", "UNAVAILABLE" -> "sygnał niedostępny"
+    "REVERSE" -> "wsteczny"
+    "TOO_LOW" -> "za nisko"
+    "LOW_MARGIN" -> "dolna granica"
+    "OPTIMAL" -> "optymalnie"
+    "HIGH_MARGIN" -> "górna granica"
+    "TOO_HIGH" -> "za wysoko"
+    "FLAT" -> "płasko"
+    "GEAR_RECOMMENDED" -> "zalecany bieg"
+    "STEEP" -> "duże nachylenie"
+    "FIRST" -> "pierwszy bieg"
+    else -> value
+}
+
+private fun polishDiagnosticLabel(name: String): String {
+    val exact = diagnosticLabelOverrides[name]
+    if (exact != null) return exact
+    val words = name
+        .replace(Regex("([a-z0-9])([A-Z])"), "$1 $2")
+        .split(' ')
+        .filterNot { it.lowercase(Locale.ROOT) in setOf("is", "are", "has") }
+        .map { diagnosticWordTranslations[it.lowercase(Locale.ROOT)] ?: it.uppercase(Locale.ROOT) }
+    return words.joinToString(" ").replaceFirstChar { it.uppercase(Locale("pl", "PL")) }
+}
+
+private val diagnosticLabelOverrides = mapOf(
+    "powerState" to "Stan samochodu",
+    "lastCanFrameTimestampMs" to "Czas ostatniej ramki CAN",
+    "speedKph" to "Prędkość",
+    "speedKphPrecise" to "Prędkość dokładna",
+    "engineRpm" to "Obroty silnika",
+    "engineRpmPrecise" to "Obroty silnika dokładne",
+    "fuelLevelPercent" to "Poziom paliwa",
+    "fuelLevelEstimatedPercent" to "Szacowany poziom paliwa",
+    "coolantTemperatureCelsius" to "Temperatura płynu chłodzącego",
+    "outsideTemperatureCelsius" to "Temperatura zewnętrzna",
+    "odometerKm" to "Przebieg",
+    "wiperMode" to "Tryb wycieraczek",
+    "vehiclePitchDegrees" to "Nachylenie przód–tył",
+    "vehicleRollDegrees" to "Nachylenie lewo–prawo",
+    "pitchDegrees" to "Surowy kąt X telefonu",
+    "rollDegrees" to "Surowy kąt Y telefonu",
+    "azimuthDegrees" to "Azymut telefonu",
+    "preferredGear" to "Zalecany bieg",
+    "shiftDirection" to "Zalecenie zmiany biegu",
+    "forwardGear" to "Oszacowany aktualny bieg",
+    "status" to "Stan oszacowania",
+    "confidence" to "Pewność",
+    "currentRpm" to "Aktualne obroty",
+    "zone" to "Strefa obrotów",
+)
+
+private val diagnosticWordTranslations = mapOf(
+    "active" to "aktywny", "available" to "dostępny", "average" to "średnia",
+    "acceleration" to "przyspieszenie", "accelerator" to "gazu", "accessory" to "akcesoriów",
+    "airbag" to "poduszki",
+    "age" to "wiek", "angle" to "kąt", "angular" to "kątowa", "applied" to "zaciągnięty",
+    "asr" to "ASR", "abs" to "ABS", "backlight" to "podświetlenie",
+    "beam" to "światła", "belt" to "pasa", "body" to "nadwozia", "brake" to "hamulca",
+    "braking" to "hamowań", "bus" to "magistrala", "can" to "CAN",
+    "charging" to "ładowania", "command" to "polecenie", "computer" to "komputera",
+    "clutch" to "sprzęgła", "cluster" to "zegarów", "coolant" to "płynu",
+    "consumption" to "spalanie", "count" to "liczba", "counter" to "licznik",
+    "current" to "aktualny", "data" to "dane", "defrost" to "ogrzewania szyby",
+    "degrees" to "stopnie", "disabled" to "wyłączony", "distance" to "dystans", "driver" to "kierowcy",
+    "door" to "drzwi", "doors" to "drzwi", "downhill" to "zjazdu",
+    "duration" to "czas", "electronic" to "elektroniki", "engine" to "silnika",
+    "end" to "końcowy", "ended" to "zakończenie", "engaged" to "włączony",
+    "epoch" to "systemowy", "error" to "błąd", "estimate" to "oszacowanie",
+    "estimated" to "szacowany", "esp" to "ESP", "fault" to "usterka",
+    "fog" to "przeciwmgielne", "frame" to "ramki", "front" to "przednie", "fuel" to "paliwa",
+    "gear" to "bieg", "glow" to "żarowe", "hard" to "gwałtownych",
+    "hazard" to "awaryjne", "high" to "wysoki", "hour" to "godzinę",
+    "idle" to "postoju",
+    "ignition" to "zapłonu", "instrument" to "zegarów", "kinematics" to "kinematyki",
+    "kph" to "km/h", "lateral" to "boczne",
+    "left" to "lewe", "level" to "poziom", "lights" to "światła",
+    "liters" to "litry", "lock" to "rygla", "locked" to "zaryglowany", "match" to "międzygaz",
+    "longitudinal" to "wzdłużne", "low" to "niski", "max" to "maksymalny",
+    "meters" to "metry", "min" to "minimalny", "minutes" to "minuty", "ms" to "ms",
+    "moving" to "jazdy", "network" to "sieci", "nm" to "Nm",
+    "odometer" to "przebiegu", "oil" to "oleju", "open" to "otwarte",
+    "observed" to "zaobserwowany", "optimal" to "optymalny", "outside" to "zewnętrzna",
+    "overheat" to "przegrzania", "pair" to "para", "parking" to "postojowego",
+    "passenger" to "pasażera", "pedal" to "pedał", "percent" to "procent",
+    "per" to "na", "plug" to "świece", "position" to "pozycyjne",
+    "precise" to "dokładny", "pressure" to "ciśnienia", "pressed" to "wciśnięty",
+    "range" to "zakres", "rate" to "tempo", "ratio" to "przełożenia", "raw" to "surowe",
+    "rear" to "tylne", "relative" to "względny", "requested" to "żądany",
+    "recommended" to "zalecany", "reverse" to "wsteczny", "rev" to "obrotów",
+    "right" to "prawe", "rpm" to "RPM",
+    "running" to "pracuje", "sample" to "próbki", "seat" to "fotela",
+    "sensor" to "czujnika", "service" to "serwisowe", "signal" to "sygnał",
+    "since" to "od", "speed" to "prędkość", "start" to "startu",
+    "stable" to "stabilny", "started" to "rozpoczęcie", "state" to "stan", "status" to "status",
+    "steering" to "kierownicy", "stop" to "STOP", "temperature" to "temperatura",
+    "system" to "układu", "target" to "docelowy", "timestamp" to "czas",
+    "torque" to "moment", "trip" to "podróży",
+    "trunk" to "klapa", "turn" to "kierunkowskaz", "used" to "zużyte",
+    "up" to "w górę", "uphill" to "podjazdu", "valid" to "ważne",
+    "vehicle" to "pojazdu", "velocity" to "prędkość",
+    "warning" to "ostrzeżenie", "wheel" to "koła", "window" to "szyba",
+    "wiper" to "wycieraczki", "yaw" to "odchylenie", "zone" to "strefa",
+)
+
+@Composable
+private fun TripHistoryReadout(
+    history: List<TripSummary>,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    var selectedTripId by remember { mutableStateOf<Long?>(null) }
+    val selectedTrip = history.firstOrNull { it.id == selectedTripId }
+    if (selectedTrip != null) {
+        Box(modifier = modifier) {
+            TripHistoryDetailReadout(
+                summary = selectedTrip,
+                uiScale = uiScale,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Text(
+                text = "‹ HISTORIA",
+                color = Blue.copy(alpha = 0.82f),
+                fontSize = (7f * uiScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .clickable { selectedTripId = null }
+                    .padding((8f * uiScale).dp),
+            )
+        }
+        return
+    }
+    if (history.isEmpty()) {
+        Box(contentAlignment = Alignment.Center, modifier = modifier) {
+            Text(
+                text = "BRAK ZAPISANYCH PODRÓŻY",
+                color = Muted.copy(alpha = 0.55f),
+                fontSize = (8f * uiScale).sp,
+                letterSpacing = (1f * uiScale).sp,
+            )
+        }
+        return
+    }
+    Column(
+        verticalArrangement = Arrangement.spacedBy((5f * uiScale).dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(
+                horizontal = (8f * uiScale).dp,
+                vertical = (4f * uiScale).dp,
+            ),
+    ) {
+        history.forEach { summary ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Color.White.copy(alpha = 0.035f),
+                        RoundedCornerShape((10f * uiScale).dp),
+                    )
+                    .clickable { selectedTripId = summary.id }
+                    .padding(
+                        horizontal = (9f * uiScale).dp,
+                        vertical = (6f * uiScale).dp,
+                    ),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = formatTripDate(summary.startedAtEpochMs),
+                        color = Ink.copy(alpha = 0.82f),
+                        fontSize = (8f * uiScale).sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        text = formatDuration(summary.durationMs),
+                        color = Muted.copy(alpha = 0.55f),
+                        fontSize = (6.5f * uiScale).sp,
+                    )
+                }
+                Text(
+                    text = "${formatTwoDecimals(summary.distanceKm)} km",
+                    color = Ink.copy(alpha = 0.78f),
+                    fontSize = (10f * uiScale).sp,
+                    style = TextStyle(fontFeatureSettings = "tnum"),
+                )
+                Spacer(Modifier.width((14f * uiScale).dp))
+                Text(
+                    text = summary.averageConsumptionLitersPer100Km
+                        ?.let { "${formatOneDecimal(it)} l/100" }
+                        ?: "—",
+                    color = Amber.copy(alpha = 0.82f),
+                    fontSize = (8f * uiScale).sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TripHistoryDetailReadout(
+    summary: TripSummary,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy((9f * uiScale).dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = (10f * uiScale).dp, vertical = (22f * uiScale).dp),
+    ) {
+        Text(
+            text = formatTripDate(summary.startedAtEpochMs),
+            color = Ink,
+            fontSize = (13f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = "KONIEC ${formatTripTime(summary.endedAtEpochMs)}  •  ${formatDuration(summary.durationMs)}",
+            color = Muted.copy(alpha = 0.66f),
+            fontSize = (7f * uiScale).sp,
+            letterSpacing = (0.5f * uiScale).sp,
+        )
+        HistoryMetricRow(
+            listOf(
+                "DYSTANS" to "${formatTwoDecimals(summary.distanceKm)} km",
+                "SPALANIE" to (summary.averageConsumptionLitersPer100Km?.let { "${formatOneDecimal(it)} l/100" } ?: "—"),
+                "PALIWO" to "${formatThreeDecimals(summary.fuelUsedLiters)} L",
+            ), uiScale,
+        )
+        HistoryMetricRow(
+            listOf(
+                "ŚREDNIA" to "${formatOneDecimal(summary.averageSpeedKph)} km/h",
+                "W RUCHU" to "${formatOneDecimal(summary.averageMovingSpeedKph)} km/h",
+                "MAKS." to "${formatOneDecimal(summary.maxSpeedKph)} km/h",
+            ), uiScale,
+        )
+        HistoryMetricRow(
+            listOf(
+                "JAZDA" to formatDurationCompact(summary.movingDurationMs),
+                "POSTÓJ" to formatDurationCompact(summary.idleDurationMs),
+                "RPM ŚR./MAX" to "${summary.averageRpm.roundToInt()} / ${summary.maxRpm}",
+            ), uiScale,
+        )
+        HistoryMetricRow(
+            listOf(
+                "PALIWO START" to (summary.startFuelPercent?.let { "${it.roundToInt()}%" } ?: "—"),
+                "PALIWO KONIEC" to (summary.endFuelPercent?.let { "${it.roundToInt()}%" } ?: "—"),
+                "GAZ ŚR./MAX" to if (summary.averageAcceleratorPercent != null && summary.maxAcceleratorPercent != null) {
+                    "${summary.averageAcceleratorPercent.roundToInt()} / ${summary.maxAcceleratorPercent.roundToInt()}%"
+                } else "—",
+            ), uiScale,
+        )
+        HistoryMetricRow(
+            listOf(
+                "PŁYN MAX" to (summary.maxCoolantTemperatureCelsius?.let { "$it°C" } ?: "—"),
+                "ZEWN. MIN/MAX" to if (summary.minOutsideTemperatureCelsius != null && summary.maxOutsideTemperatureCelsius != null) {
+                    "${summary.minOutsideTemperatureCelsius} / ${summary.maxOutsideTemperatureCelsius}°C"
+                } else "—",
+                "MOCNE A/H" to "${summary.hardAccelerationCount} / ${summary.hardBrakingCount}",
+            ), uiScale,
+        )
+        HistoryMetricRow(
+            listOf(
+                "PODJAZD" to (summary.maxUphillDegrees?.let { "${formatOneDecimal(it.toDouble())}°" } ?: "—"),
+                "ZJAZD" to (summary.maxDownhillDegrees?.let { "${formatOneDecimal(abs(it).toDouble())}°" } ?: "—"),
+                "PRZEBIEG" to if (summary.startOdometerKm != null && summary.endOdometerKm != null) {
+                    "${formatOdometer(summary.startOdometerKm)} → ${formatOdometer(summary.endOdometerKm)}"
+                } else "—",
+            ), uiScale,
+        )
+    }
+}
+
+@Composable
+private fun HistoryMetricRow(values: List<Pair<String, String>>, uiScale: Float) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        values.forEach { (label, value) ->
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                DetailMetric(label, value, if (label.contains("SPAL") || label == "PALIWO") Amber else Ink, uiScale)
+            }
         }
     }
 }
@@ -1097,16 +1860,41 @@ private fun InlineState(
 @Composable
 private fun PrimaryReadout(
     state: VehicleState,
+    lastTripSummary: TripSummary?,
+    parkingSlopeGuidance: ParkingSlopeGuidance,
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
-    var showVehicle by remember { mutableStateOf(state.speedKph == 0) }
-    LaunchedEffect(state.speedKph) {
-        if (state.speedKph == 0) {
-            delay(420)
-            if (state.speedKph == 0) showVehicle = true
-        } else {
+    val confirmedSpeed = state.speedKphPrecise
+    var showVehicle by remember {
+        mutableStateOf(!state.isSpeedSignalAvailable || (confirmedSpeed ?: 0.0) == 0.0)
+    }
+    LaunchedEffect(confirmedSpeed, state.isSpeedSignalAvailable) {
+        if (!state.isSpeedSignalAvailable || confirmedSpeed == null) return@LaunchedEffect
+        if (confirmedSpeed > 0.0) {
             showVehicle = false
+        } else {
+            // Two closely spaced 0x354 publications suppress a single stale or
+            // malformed zero without making a real stop feel delayed.
+            delay(140L)
+            if (state.isSpeedSignalAvailable && state.speedKphPrecise == 0.0) {
+                showVehicle = true
+            }
+        }
+    }
+    val steeringSample = state.steeringWheelAngleDegrees?.let {
+        (it / STEERING_DISPLAY_STEP_DEGREES).roundToInt() * STEERING_DISPLAY_STEP_DEGREES
+    }
+    val showParkingAxes = rememberSteeringActivity(steeringSample, forceVisible = false)
+    var recentSummary by remember(lastTripSummary?.id) { mutableStateOf(false) }
+    LaunchedEffect(lastTripSummary?.id) {
+        val remainingMs = lastTripSummary?.let {
+            15_000L - (System.currentTimeMillis() - it.endedAtEpochMs)
+        } ?: 0L
+        recentSummary = remainingMs > 0L
+        if (remainingMs > 0L) {
+            delay(remainingMs)
+            recentSummary = false
         }
     }
     Box(
@@ -1114,7 +1902,11 @@ private fun PrimaryReadout(
         modifier = modifier,
     ) {
         AnimatedContent(
-            targetState = showVehicle,
+            targetState = when {
+                recentSummary && lastTripSummary != null -> 2
+                showVehicle -> 1
+                else -> 0
+            },
             transitionSpec = {
                 (fadeIn(tween(210)) + scaleIn(tween(230), initialScale = 0.97f))
                     .togetherWith(
@@ -1123,16 +1915,37 @@ private fun PrimaryReadout(
             },
             contentAlignment = Alignment.Center,
             label = "primaryReadout",
-        ) { stationary ->
-            if (stationary) {
-                VehicleStatusSymbol(
-                    state = state,
-                    modifier = Modifier
-                        .fillMaxHeight(0.91f)
-                        .aspectRatio(0.55f),
+        ) { mode ->
+            when (mode) {
+                2 -> TripSummaryReadout(
+                    summary = lastTripSummary!!,
+                    uiScale = uiScale,
+                    modifier = Modifier.fillMaxSize(),
                 )
-            } else {
-                SpeedValueReadout(
+                1 -> Box(contentAlignment = Alignment.Center) {
+                    VehiclePowerHalo(
+                        powerState = state.powerState,
+                        modifier = Modifier
+                            .fillMaxHeight(0.95f)
+                            .aspectRatio(0.72f),
+                    )
+                    VehicleStatusSymbol(
+                        state = state,
+                        modifier = Modifier
+                            .fillMaxHeight(0.91f)
+                            .aspectRatio(0.55f),
+                    )
+                    if (showParkingAxes) {
+                        ParkingSlopeOverlay(
+                            guidance = parkingSlopeGuidance,
+                            uiScale = uiScale,
+                            modifier = Modifier
+                                .fillMaxHeight(0.92f)
+                                .aspectRatio(0.72f),
+                        )
+                    }
+                }
+                else -> SpeedValueReadout(
                     speedKph = state.speedKph,
                     uiScale = uiScale,
                     modifier = Modifier.fillMaxSize(),
@@ -1143,8 +1956,37 @@ private fun PrimaryReadout(
 }
 
 @Composable
+private fun rememberSteeringActivity(
+    steeringSample: Float?,
+    forceVisible: Boolean,
+): Boolean {
+    var previousSample by remember { mutableStateOf<Float?>(null) }
+    var visible by remember { mutableStateOf(forceVisible && steeringSample != null) }
+    LaunchedEffect(steeringSample, forceVisible) {
+        if (steeringSample == null) {
+            visible = false
+            previousSample = null
+            return@LaunchedEffect
+        }
+        val moved = previousSample?.let {
+            abs(steeringSample - it) >= STEERING_DISPLAY_STEP_DEGREES
+        } == true
+        previousSample = steeringSample
+        if (forceVisible) {
+            visible = true
+        } else if (moved) {
+            visible = true
+            delay(STEERING_VISIBILITY_TIMEOUT_MS)
+            visible = false
+        }
+    }
+    return visible
+}
+
+@Composable
 private fun VehicleStatusSymbol(
     state: VehicleState,
+    forceSteeringGuide: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val doorAnimation = spring<Float>(
@@ -1209,19 +2051,13 @@ private fun VehicleStatusSymbol(
     var displayedSteeringAngle by remember {
         mutableStateOf(steeringSample ?: 0f)
     }
-    var showSteeringGuide by remember {
-        mutableStateOf(steeringSample != null)
-    }
     LaunchedEffect(steeringSample) {
-        if (steeringSample == null) {
-            showSteeringGuide = false
-        } else {
-            displayedSteeringAngle = steeringSample
-            showSteeringGuide = true
-            delay(STEERING_VISIBILITY_TIMEOUT_MS)
-            showSteeringGuide = false
-        }
+        if (steeringSample != null) displayedSteeringAngle = steeringSample
     }
+    val showSteeringGuide = rememberSteeringActivity(
+        steeringSample = steeringSample,
+        forceVisible = forceSteeringGuide,
+    )
     val steeringGuideAlpha by animateFloatAsState(
         targetValue = if (showSteeringGuide) 1f else 0f,
         animationSpec = tween(300),
@@ -1903,7 +2739,10 @@ private fun WarningTray(
     val activeIndicators = VehicleIndicator.entries
         .filter {
             it.severity != IndicatorSeverity.INFORMATION ||
-                it == VehicleIndicator.WIPERS
+                it == VehicleIndicator.WIPERS ||
+                it == VehicleIndicator.UNLOCKED ||
+                it == VehicleIndicator.HAZARD ||
+                it == VehicleIndicator.REAR_DEFROST
         }
         .sortedBy { it.severity.ordinal }
         .filter(state::isActive)
@@ -1962,7 +2801,9 @@ private fun WarningIcon(
     uiScale: Float,
 ) {
     val tint = when {
-        indicator == VehicleIndicator.WIPERS -> Blue
+        indicator == VehicleIndicator.WIPERS ||
+            indicator == VehicleIndicator.UNLOCKED ||
+            indicator == VehicleIndicator.REAR_DEFROST -> Blue
         indicator.severity == IndicatorSeverity.CRITICAL -> Red
         else -> Amber
     }
@@ -2140,6 +2981,7 @@ private fun BottomTelemetry(
     state: VehicleState,
     connectionState: UsbConnectionState,
     onReconnect: () -> Unit,
+    showPreciseValues: Boolean,
     uiScale: Float,
 ) {
     Column(
@@ -2153,36 +2995,40 @@ private fun BottomTelemetry(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${formatOdometer(state.odometerKm)} km",
+                text = state.outsideTemperatureCelsius
+                    ?.let { "$it°C" }
+                    ?: "—",
                 color = Ink.copy(alpha = 0.38f),
                 fontSize = (9.5f * uiScale).sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = (0.35f * uiScale).sp,
                 style = TextStyle(fontFeatureSettings = "tnum"),
             )
-            state.outsideTemperatureCelsius?.let { temperature ->
-                Text(
-                    text = "$temperature°C",
-                    color = Ink.copy(alpha = 0.38f),
-                    fontSize = (9.5f * uiScale).sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = (0.35f * uiScale).sp,
-                    style = TextStyle(fontFeatureSettings = "tnum"),
-                    modifier = Modifier.semantics {
-                        contentDescription =
-                            "Temperatura zewnętrzna $temperature stopni Celsjusza"
-                    },
-                )
-            }
+            Text(
+                text = state.odometerKm
+                    .takeIf { state.isOdometerSignalAvailable }
+                    ?.let { "${formatOdometer(it)} km" }
+                    ?: "—",
+                color = Ink.copy(alpha = 0.38f),
+                fontSize = (9.5f * uiScale).sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = (0.35f * uiScale).sp,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+            )
         }
         Spacer(Modifier.height((6f * uiScale).dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ThinLevelBar(
+            TelemetryLevelBar(
                 progress = state.fuelLevelPercent / 100f,
                 tint = if (state.fuelLevelPercent <= 15) Red else Amber,
+                label = if (showPreciseValues) {
+                    state.fuelLevelEstimatedPercent?.let {
+                        "${(it / 100f * FUEL_TANK_CAPACITY_LITERS).roundToInt()} / 60 L"
+                    }
+                } else null,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width((7f * uiScale).dp))
@@ -2204,11 +3050,47 @@ private fun BottomTelemetry(
                 Modifier.size((17f * uiScale).dp),
             )
             Spacer(Modifier.width((7f * uiScale).dp))
-            ThinLevelBar(
+            TelemetryLevelBar(
                 progress = ((state.coolantTemperatureCelsius - 40f) / 80f)
                     .coerceIn(0f, 1f),
                 tint = if (state.coolantTemperatureCelsius >= 105) Red else Blue,
+                label = if (showPreciseValues && state.isCoolantTemperatureSignalAvailable) {
+                    "${state.coolantTemperatureCelsius}°C"
+                } else null,
                 modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TelemetryLevelBar(
+    progress: Float,
+    tint: Color,
+    label: String?,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier.height(15.dp),
+    ) {
+        ThinLevelBar(
+            progress = progress,
+            tint = tint,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (label != null) {
+            Text(
+                text = label,
+                color = Ink.copy(alpha = 0.72f),
+                fontSize = 7.sp,
+                lineHeight = 8.sp,
+                fontWeight = FontWeight.Medium,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .background(CanvasBlack.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 3.dp),
             )
         }
     }
@@ -2318,26 +3200,12 @@ private fun GearRecommendationReadout(
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
-    var lastPreferredGear by remember {
-        mutableStateOf(guidance.preferredGear)
+    var lastConfirmedGear by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(guidance.displayGear) {
+        guidance.displayGear?.let { lastConfirmedGear = it }
     }
-    var lastShiftDirection by remember {
-        mutableStateOf(guidance.shiftDirection)
-    }
-    LaunchedEffect(guidance.preferredGear) {
-        guidance.preferredGear?.let { lastPreferredGear = it }
-    }
-    LaunchedEffect(guidance.shiftDirection) {
-        if (guidance.shiftDirection != ShiftDirection.NONE) {
-            lastShiftDirection = guidance.shiftDirection
-        }
-    }
-    val displayedGear = guidance.displayGear
-        ?: lastPreferredGear?.toString()
-        ?: "1"
-    val displayedDirection =
-        guidance.shiftDirection.takeUnless { it == ShiftDirection.NONE }
-            ?: lastShiftDirection
+    val displayedGear = guidance.displayGear ?: lastConfirmedGear ?: "—"
+    val displayedDirection = guidance.shiftDirection
     val arrowPresence by animateFloatAsState(
         targetValue =
             if (guidance.shiftDirection == ShiftDirection.NONE) 0f else 1f,
@@ -2352,7 +3220,7 @@ private fun GearRecommendationReadout(
         label = "gearArrowPresence",
     )
     AnimatedVisibility(
-        visible = guidance.displayGear != null,
+        visible = displayedGear != "—",
         enter = fadeIn(tween(150)) + scaleIn(tween(170), initialScale = 0.92f),
         exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.96f),
         modifier = modifier,
@@ -2467,106 +3335,56 @@ private fun GearRecommendationReadout(
 }
 
 @Composable
-private fun SweetSpotRail(
-    state: SweetSpotState,
+private fun RpmSuitabilityRail(
+    state: RpmSuitabilityState,
     gearGuidance: GearGuidance,
+    showRpmValue: Boolean,
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
     val animatedRpm by animateFloatAsState(
         targetValue = state.currentRpm.toFloat(),
         animationSpec = tween(110),
-        label = "sweetSpotTape",
+        label = "rpmSuitabilityTape",
     )
-    val animatedSafeFirst by animateIntAsState(
-        targetValue = state.safeRange.first,
-        animationSpec = tween(180),
-        label = "sweetSpotSafeFirst",
-    )
-    val animatedSafeLast by animateIntAsState(
-        targetValue = state.safeRange.last,
-        animationSpec = tween(180),
-        label = "sweetSpotSafeLast",
-    )
-    val animatedWarningFirst by animateIntAsState(
-        targetValue = state.warningRange.first,
-        animationSpec = tween(180),
-        label = "sweetSpotWarningFirst",
-    )
-    val animatedWarningLast by animateIntAsState(
-        targetValue = state.warningRange.last,
-        animationSpec = tween(180),
-        label = "sweetSpotWarningLast",
-    )
+    val safeFirst by animateIntAsState(state.optimalRange.first, tween(180), label = "rpmSafeFirst")
+    val safeLast by animateIntAsState(state.optimalRange.last, tween(180), label = "rpmSafeLast")
+    val warningFirst by animateIntAsState(state.warningRange.first, tween(180), label = "rpmWarnFirst")
+    val warningLast by animateIntAsState(state.warningRange.last, tween(180), label = "rpmWarnLast")
     Box(
         modifier = modifier.semantics {
-            val gearDescription = when {
-                gearGuidance.estimate.status == GearEstimateStatus.REVERSE ->
-                    ", bieg wsteczny"
-
-                gearGuidance.preferredGear != null ->
-                    ", preferowany bieg ${gearGuidance.preferredGear}"
-
-                else -> ""
-            }
-            val shiftDescription = when (gearGuidance.shiftDirection) {
-                ShiftDirection.UP -> ", zmień bieg w górę"
-                ShiftDirection.DOWN -> ", zmień bieg w dół"
-                ShiftDirection.NONE -> ""
-            }
             contentDescription =
-                "Przesuwany wskaźnik sweet spot sprzęgła$gearDescription$shiftDescription"
+                "Zakres obrotów dla biegu ${state.estimatedCurrentGear ?: 0}: ${state.zone}"
         },
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            drawRect(Color(0xFF0D1215))
-            val trackLeft = 0f
             val trackRight = size.width - 5.dp.toPx()
-            val trackTop = 0f
-            val trackBottom = size.height
-            val trackWidth = trackRight - trackLeft
-            val trackHeight = trackBottom - trackTop
             val centerY = size.height / 2f
-            val pixelsPerRpm = trackHeight / 2_550f
+            val pixelsPerRpm = size.height / 2_550f
             fun yFor(rpm: Int) = centerY + (animatedRpm - rpm) * pixelsPerRpm
             fun drawBand(range: IntRange, color: Color) {
-                val top = yFor(range.last).coerceAtLeast(trackTop)
-                val bottom = yFor(range.first).coerceAtMost(trackBottom)
+                val top = yFor(range.last).coerceAtLeast(0f)
+                val bottom = yFor(range.first).coerceAtMost(size.height)
                 if (bottom > top) {
                     drawRect(
                         brush = Brush.horizontalGradient(
-                            listOf(
-                                color.copy(alpha = 0.72f),
-                                color,
-                                color.copy(alpha = 0.70f),
-                            ),
-                            startX = trackLeft,
+                            listOf(color.copy(alpha = 0.72f), color, color.copy(alpha = 0.70f)),
                             endX = trackRight,
                         ),
-                        topLeft = Offset(trackLeft, top),
-                        size = Size(trackWidth, bottom - top),
+                        topLeft = Offset(0f, top),
+                        size = Size(trackRight, bottom - top),
                     )
                 }
             }
-
-            clipRect(trackLeft, trackTop, trackRight, trackBottom) {
+            clipRect(0f, 0f, trackRight, size.height) {
                 drawRect(
                     brush = Brush.verticalGradient(
                         listOf(Color(0xFF8E303B), Color(0xFFA63C47), Color(0xFF812A35)),
-                        startY = trackTop,
-                        endY = trackBottom,
                     ),
-                    topLeft = Offset(trackLeft, trackTop),
-                    size = Size(trackWidth, trackHeight),
+                    size = Size(trackRight, size.height),
                 )
-                drawBand(
-                    animatedWarningFirst..animatedWarningLast,
-                    Color(0xFFB99B59),
-                )
-                drawBand(
-                    animatedSafeFirst..animatedSafeLast,
-                    Color(0xFF3F936D),
-                )
+                drawBand(warningFirst..warningLast, Color(0xFFB99B59))
+                drawBand(safeFirst..safeLast, Color(0xFF3F936D))
                 drawRect(
                     brush = Brush.horizontalGradient(
                         listOf(
@@ -2575,43 +3393,36 @@ private fun SweetSpotRail(
                             Color.White.copy(alpha = 0.07f),
                             Color.Black.copy(alpha = 0.22f),
                         ),
-                        startX = trackLeft,
-                        endX = trackRight,
                     ),
-                    topLeft = Offset(trackLeft, trackTop),
-                    size = Size(trackWidth, trackHeight),
+                    size = Size(trackRight, size.height),
                 )
-
-                val visibleMin = animatedRpm.toInt() - 1_450
-                val visibleMax = animatedRpm.toInt() + 1_450
-                val first = floor(visibleMin / 100f).toInt() * 100
-                val last = ceil(visibleMax / 100f).toInt() * 100
+                val first = floor((animatedRpm - 1_450f) / 100f).toInt() * 100
+                val last = ceil((animatedRpm + 1_450f) / 100f).toInt() * 100
                 for (rpm in first..last step 100) {
                     val y = yFor(rpm)
-                    if (y in trackTop..trackBottom) {
+                    if (y in 0f..size.height) {
                         val major = rpm % 500 == 0
-                        val tickInset = if (major) trackWidth * 0.18f else trackWidth * 0.31f
+                        val inset = if (major) trackRight * 0.18f else trackRight * 0.31f
                         drawLine(
                             color = Color.Black.copy(alpha = if (major) 0.42f else 0.22f),
-                            start = Offset(trackLeft + tickInset, y),
-                            end = Offset(trackRight - tickInset, y),
+                            start = Offset(inset, y),
+                            end = Offset(trackRight - inset, y),
                             strokeWidth = if (major) 1.5.dp.toPx() else 0.7.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
                 }
             }
-
             drawLine(
                 color = Color.Black.copy(alpha = 0.65f),
-                start = Offset(trackLeft - 2.dp.toPx(), centerY),
+                start = Offset(-2.dp.toPx(), centerY),
                 end = Offset(trackRight + 2.dp.toPx(), centerY),
                 strokeWidth = 8.dp.toPx(),
                 cap = StrokeCap.Square,
             )
             drawLine(
                 color = Color.White.copy(alpha = 0.94f),
-                start = Offset(trackLeft - 1.dp.toPx(), centerY),
+                start = Offset(-1.dp.toPx(), centerY),
                 end = Offset(trackRight + 1.dp.toPx(), centerY),
                 strokeWidth = 2.dp.toPx(),
                 cap = StrokeCap.Square,
@@ -2626,9 +3437,244 @@ private fun SweetSpotRail(
         GearRecommendationReadout(
             guidance = gearGuidance,
             uiScale = uiScale,
+            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
+        )
+        if (showRpmValue) {
+            Text(
+                text = state.currentRpm.toString(),
+                color = Ink.copy(alpha = 0.86f),
+                fontSize = (7.5f * uiScale).sp,
+                fontWeight = FontWeight.Medium,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = (4f * uiScale).dp)
+                    .background(CanvasBlack.copy(alpha = 0.70f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 3.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AntiStallRail(
+    guidance: AntiStallGuidance,
+    gearGuidance: GearGuidance,
+    engineRpm: Int,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val position by animateFloatAsState(
+        targetValue = ((guidance.normalizedReserve + 1f) / 2f).coerceIn(0f, 1f),
+        animationSpec = tween(260, easing = FastOutSlowInEasing),
+        label = "antiStallReserve",
+    )
+    val statusTint = when (guidance.status) {
+        AntiStallStatus.STALL_RISK -> Red
+        AntiStallStatus.ADD_THROTTLE -> Amber
+        AntiStallStatus.RELEASE_SMOOTHLY -> Green
+        AntiStallStatus.ENGINE_RESERVE -> when {
+            guidance.normalizedReserve < -0.28f -> Red
+            guidance.normalizedReserve < 0f -> Amber
+            else -> Green
+        }
+        else -> Muted
+    }
+    val isAssistActive = guidance.status != AntiStallStatus.ENGINE_OFF &&
+        guidance.status != AntiStallStatus.INACTIVE
+    val compactPrompt = when (guidance.status) {
+        AntiStallStatus.STALL_RISK -> "RYZYKO ZGAŚNIĘCIA"
+        AntiStallStatus.ADD_THROTTLE -> "DODAJ GAZU"
+        AntiStallStatus.RELEASE_SMOOTHLY -> "PUŚĆ PŁYNNIE"
+        AntiStallStatus.ENGINE_RESERVE -> "ANTI-STALL"
+        AntiStallStatus.ENGINE_OFF -> ""
+        AntiStallStatus.CLUTCH_RELEASED -> "SPRZĘGŁO PUSZCZONE"
+        AntiStallStatus.INACTIVE -> ""
+    }
+    Box(
+        modifier = modifier
+            .background(Color(0xFF0D1215))
+            .semantics {
+                contentDescription =
+                    "Asystent anti-stall: ${guidance.prompt}, zapas ${guidance.rpmReserve} obrotów"
+            },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val right = size.width - 4.dp.toPx()
+            val top = 62.dp.toPx() * uiScale
+            val bottom = size.height
+            val height = (bottom - top).coerceAtLeast(1f)
+            if (isAssistActive) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Green.copy(alpha = 0.68f),
+                            Green.copy(alpha = 0.48f),
+                            Amber.copy(alpha = 0.50f),
+                            Red.copy(alpha = 0.66f),
+                        ),
+                        startY = top,
+                        endY = bottom,
+                    ),
+                    topLeft = Offset(0f, top),
+                    size = Size(right, height),
+                )
+            } else {
+                drawRect(
+                    color = Muted.copy(alpha = 0.08f),
+                    topLeft = Offset(0f, top),
+                    size = Size(right, height),
+                )
+            }
+            if (isAssistActive) {
+                var tickY = top + 9.dp.toPx()
+                while (tickY < bottom) {
+                    drawLine(
+                        color = Color.Black.copy(alpha = 0.30f),
+                        start = Offset(right * 0.28f, tickY),
+                        end = Offset(right * 0.74f, tickY),
+                        strokeWidth = 0.8.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                    tickY += 10.dp.toPx()
+                }
+            }
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    listOf(
+                        Color.Black.copy(alpha = 0.34f),
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.28f),
+                    ),
+                ),
+                topLeft = Offset(0f, top),
+                size = Size(right, height),
+            )
+            if (isAssistActive) {
+                val y = bottom - position * height
+                drawLine(
+                    color = Color.Black.copy(alpha = 0.72f),
+                    start = Offset(0f, y),
+                    end = Offset(right, y),
+                    strokeWidth = 8.dp.toPx(),
+                )
+                drawLine(
+                    color = statusTint.copy(alpha = 0.98f),
+                    start = Offset(0f, y),
+                    end = Offset(right, y),
+                    strokeWidth = 2.3.dp.toPx(),
+                )
+            }
+            drawLine(
+                color = Color.White.copy(alpha = 0.10f),
+                start = Offset(right, 0f),
+                end = Offset(right, size.height),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+        GearRecommendationReadout(
+            guidance = gearGuidance,
+            uiScale = uiScale,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth(),
+        )
+        if (compactPrompt.isNotBlank()) {
+            Text(
+                text = compactPrompt,
+                color = statusTint.copy(alpha = 0.88f),
+                fontSize = (6.2f * uiScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = (0.7f * uiScale).sp,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .graphicsLayer { rotationZ = -90f },
+            )
+        }
+        Text(
+            text = engineRpm.toString(),
+            color = Ink.copy(alpha = 0.72f),
+            fontSize = (7.5f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = (4f * uiScale).dp)
+                .background(CanvasBlack.copy(alpha = 0.62f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 3.dp),
+        )
+    }
+}
+
+@Composable
+private fun RpmRail(
+    state: VehicleState,
+    gearGuidance: GearGuidance,
+    uiScale: Float,
+    modifier: Modifier = Modifier,
+) {
+    val progress by animateFloatAsState(
+        targetValue = (state.engineRpm / 4_500f).coerceIn(0f, 1f),
+        animationSpec = tween(150),
+        label = "rpmRail",
+    )
+    val tint = when {
+        state.engineRpm >= 4_000 -> Red
+        state.engineRpm >= 3_200 -> Amber
+        state.engineRpm >= 1_200 -> Green
+        else -> Blue
+    }
+    Box(
+        modifier = modifier
+            .background(Color(0xFF0D1215))
+            .semantics { contentDescription = "Obroty silnika ${state.engineRpm}" },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val right = size.width - 4.dp.toPx()
+            val top = 62.dp.toPx() * uiScale
+            val available = (size.height - top).coerceAtLeast(1f)
+            val fillTop = size.height - available * progress
+            drawRect(
+                color = Color.White.copy(alpha = 0.035f),
+                topLeft = Offset(0f, top),
+                size = Size(right, available),
+            )
+            drawRect(
+                brush = Brush.verticalGradient(
+                    listOf(tint.copy(alpha = 0.92f), tint.copy(alpha = 0.34f)),
+                    startY = fillTop,
+                    endY = size.height,
+                ),
+                topLeft = Offset(0f, fillTop),
+                size = Size(right, size.height - fillTop),
+            )
+            for (rpm in 0..4_500 step 500) {
+                val y = size.height - available * (rpm / 4_500f)
+                drawLine(
+                    color = Ink.copy(alpha = if (rpm % 1_000 == 0) 0.28f else 0.13f),
+                    start = Offset(right * 0.32f, y),
+                    end = Offset(right * 0.72f, y),
+                    strokeWidth = if (rpm % 1_000 == 0) 1.3.dp.toPx() else 0.7.dp.toPx(),
+                )
+            }
+        }
+        GearRecommendationReadout(
+            guidance = gearGuidance,
+            uiScale = uiScale,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(),
+        )
+        Text(
+            text = state.engineRpm.toString(),
+            color = Ink.copy(alpha = 0.84f),
+            fontSize = (8f * uiScale).sp,
+            fontWeight = FontWeight.Medium,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .graphicsLayer { rotationZ = -90f },
         )
     }
 }
@@ -2636,7 +3682,8 @@ private fun SweetSpotRail(
 @Composable
 private fun EdgeGlow(
     state: VehicleState,
-    turnPulse: Float,
+    leftTurnPulse: Float,
+    rightTurnPulse: Float,
 ) {
     Canvas(Modifier.fillMaxSize()) {
         val alertTint = when {
@@ -2682,12 +3729,13 @@ private fun EdgeGlow(
             )
         }
         val turnDepth = size.width * 0.36f
+        val turnTint = if (state.areHazardLightsOn) Amber else Green
         if (state.isLeftTurnSignalOn) {
             drawRect(
                 brush = Brush.horizontalGradient(
                     listOf(
-                        Green.copy(alpha = 0.31f * turnPulse),
-                        Green.copy(alpha = 0.10f * turnPulse),
+                        turnTint.copy(alpha = 0.31f * leftTurnPulse),
+                        turnTint.copy(alpha = 0.10f * leftTurnPulse),
                         Color.Transparent,
                     ),
                     endX = turnDepth,
@@ -2700,8 +3748,8 @@ private fun EdgeGlow(
                 brush = Brush.horizontalGradient(
                     listOf(
                         Color.Transparent,
-                        Green.copy(alpha = 0.10f * turnPulse),
-                        Green.copy(alpha = 0.31f * turnPulse),
+                        turnTint.copy(alpha = 0.10f * rightTurnPulse),
+                        turnTint.copy(alpha = 0.31f * rightTurnPulse),
                     ),
                     startX = size.width - turnDepth,
                     endX = size.width,
@@ -2716,12 +3764,14 @@ private fun EdgeGlow(
 @Composable
 private fun TurnSignalEdgeStroke(
     state: VehicleState,
-    turnPulse: Float,
+    leftTurnPulse: Float,
+    rightTurnPulse: Float,
 ) {
     Canvas(Modifier.fillMaxSize()) {
+        val turnTint = if (state.areHazardLightsOn) Amber else Green
         if (state.isLeftTurnSignalOn) {
             drawLine(
-                color = Green.copy(alpha = 0.78f * turnPulse),
+                color = turnTint.copy(alpha = 0.78f * leftTurnPulse),
                 start = Offset(1.dp.toPx(), 0f),
                 end = Offset(1.dp.toPx(), size.height),
                 strokeWidth = 2.dp.toPx(),
@@ -2729,7 +3779,7 @@ private fun TurnSignalEdgeStroke(
         }
         if (state.isRightTurnSignalOn) {
             drawLine(
-                color = Green.copy(alpha = 0.78f * turnPulse),
+                color = turnTint.copy(alpha = 0.78f * rightTurnPulse),
                 start = Offset(size.width - 1.dp.toPx(), 0f),
                 end = Offset(size.width - 1.dp.toPx(), size.height),
                 strokeWidth = 2.dp.toPx(),
@@ -2773,8 +3823,36 @@ private fun formatOneDecimal(value: Double): String =
 private fun formatTwoDecimals(value: Double): String =
     String.format(Locale("pl", "PL"), "%.2f", value)
 
+private fun formatThreeDecimals(value: Double): String =
+    String.format(Locale("pl", "PL"), "%.3f", value)
+
 private fun formatFourDecimals(value: Double): String =
     String.format(Locale("pl", "PL"), "%.4f", value)
+
+private fun formatDuration(durationMs: Long): String {
+    val totalMinutes = durationMs.coerceAtLeast(0L) / 60_000L
+    val hours = totalMinutes / 60L
+    val minutes = totalMinutes % 60L
+    return if (hours > 0L) {
+        String.format(Locale("pl", "PL"), "%d:%02d h", hours, minutes)
+    } else {
+        "$minutes min"
+    }
+}
+
+private fun formatDurationCompact(durationMs: Long): String {
+    val totalSeconds = durationMs.coerceAtLeast(0L) / 1_000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return String.format(Locale("pl", "PL"), "%d:%02d", minutes, seconds)
+}
+
+private fun formatTripDate(epochMs: Long): String =
+    SimpleDateFormat("dd.MM.yyyy  HH:mm", Locale("pl", "PL"))
+        .format(Date(epochMs))
+
+private fun formatTripTime(epochMs: Long): String =
+    SimpleDateFormat("HH:mm", Locale("pl", "PL")).format(Date(epochMs))
 
 private fun formatOdometer(value: Long): String =
     NumberFormat.getIntegerInstance(Locale("pl", "PL")).format(value)

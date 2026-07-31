@@ -20,7 +20,17 @@ enum class WiperMode {
     HIGH,
 }
 
+enum class VehiclePowerState {
+    OFF,
+    CAN_AWAKE,
+    IGNITION_ON,
+    ENGINE_RUNNING,
+}
+
 data class VehicleState(
+    val powerState: VehiclePowerState = VehiclePowerState.OFF,
+    val isCanBusActive: Boolean = false,
+    val lastCanFrameTimestampMs: Long? = null,
     val speedKph: Int = 0,
     val speedKphPrecise: Double? = null,
     val isSpeedSignalAvailable: Boolean = false,
@@ -29,12 +39,17 @@ data class VehicleState(
     val isEngineRpmSignalAvailable: Boolean = false,
     val kinematicsSampleTimestampMs: Long? = null,
     val fuelLevelPercent: Int = 0,
+    val fuelLevelEstimatedPercent: Float? = null,
     val fuelLevelRaw: Int? = null,
+    val isFuelLevelSignalAvailable: Boolean = false,
     val coolantTemperatureCelsius: Int = 0,
+    val isCoolantTemperatureSignalAvailable: Boolean = false,
     val outsideTemperatureCelsius: Int? = null,
     val odometerKm: Long = 0,
+    val isOdometerSignalAvailable: Boolean = false,
     val distanceSinceStartMeters: Double? = null,
     val fuelUsedSinceStartLiters: Double? = null,
+    val fuelCounterSampleTimestampMs: Long? = null,
     val vehicleAgeMinutes: Long? = null,
     val acceleratorPedalPercent: Float? = null,
     val requestedEngineTorqueNm: Int? = null,
@@ -42,16 +57,16 @@ data class VehicleState(
     val isEngineDataValid: Boolean = false,
     val isSteeringDataValid: Boolean = false,
     val isClusterNetworkActive: Boolean = false,
-    val isRearDefrostOn: Boolean = false,
+    val isRearDefrostCommandActive: Boolean = false,
     val isEspAsrDisabled: Boolean = false,
     val isAsrEspButtonPressed: Boolean = false,
-    val wheelPairAFirstRaw: Int? = null,
-    val wheelPairASecondRaw: Int? = null,
-    val wheelPairBFirstRaw: Int? = null,
-    val wheelPairBSecondRaw: Int? = null,
-    val yawSensorRaw: Int? = null,
-    val inertialAxisARaw: Int? = null,
-    val inertialAxisBRaw: Int? = null,
+    val wheelPairARightSpeedKph: Double? = null,
+    val wheelPairALeftSpeedKph: Double? = null,
+    val wheelPairBRightSpeedKph: Double? = null,
+    val wheelPairBLeftSpeedKph: Double? = null,
+    val longitudinalAccelerationRaw: Int? = null,
+    val lateralAccelerationRaw: Int? = null,
+    val yawRateRaw: Int? = null,
     val bodySensorRaw: Int? = null,
     val bodyStatusRaw: Int? = null,
     val serviceStatusRaw: Int? = null,
@@ -65,6 +80,7 @@ data class VehicleState(
     val isAirbagWarningActive: Boolean = false,
     val isServiceWarningActive: Boolean = false,
     val isEngineWarningActive: Boolean = false,
+    val isElectronicFaultActive: Boolean = false,
     val isAbsWarningActive: Boolean = false,
     val isEspWarningActive: Boolean = false,
     val isLowFuelWarningActive: Boolean = false,
@@ -77,6 +93,7 @@ data class VehicleState(
     val areRearFogLightsOn: Boolean = false,
     val isLeftTurnSignalOn: Boolean = false,
     val isRightTurnSignalOn: Boolean = false,
+    val areHazardLightsOn: Boolean = false,
     val isFrontLeftDoorOpen: Boolean = false,
     val isFrontRightDoorOpen: Boolean = false,
     val isRearLeftDoorOpen: Boolean = false,
@@ -93,7 +110,9 @@ data class VehicleState(
     val isReverseGearEngaged: Boolean = false,
     val isReverseGearSignalAvailable: Boolean = false,
     val areDoorsLocked: Boolean = false,
+    val isDoorLockSignalAvailable: Boolean = false,
     val isTrunkLocked: Boolean = false,
+    val isTrunkLockSignalAvailable: Boolean = false,
     val isIgnitionOn: Boolean = false,
     val isAccessoryPowerOn: Boolean = false,
     val isPassengerAirbagDisabled: Boolean = false,
@@ -138,6 +157,23 @@ enum class VehicleIndicator(
     REAR_FOG("R.FOG", "Tylne przeciwmgielne", IndicatorSeverity.INFORMATION),
     LEFT_TURN("‹", "Lewy kierunkowskaz", IndicatorSeverity.INFORMATION),
     RIGHT_TURN("›", "Prawy kierunkowskaz", IndicatorSeverity.INFORMATION),
+    HAZARD("HAZARD", "Światła awaryjne", IndicatorSeverity.INFORMATION),
+    UNLOCKED("UNLOCK", "Samochód odryglowany", IndicatorSeverity.INFORMATION),
+    ELECTRONIC_FAULT(
+        "ELEC",
+        "Usterka elektroniki",
+        IndicatorSeverity.WARNING,
+    ),
+    PASSENGER_AIRBAG_OFF(
+        "AIR OFF",
+        "Poduszka pasażera wyłączona",
+        IndicatorSeverity.WARNING,
+    ),
+    REAR_DEFROST(
+        "DEFROST",
+        "Polecenie ogrzewania tylnej szyby",
+        IndicatorSeverity.INFORMATION,
+    ),
 }
 
 fun VehicleState.isActive(indicator: VehicleIndicator): Boolean =
@@ -164,6 +200,16 @@ fun VehicleState.isActive(indicator: VehicleIndicator): Boolean =
         VehicleIndicator.REAR_FOG -> areRearFogLightsOn
         VehicleIndicator.LEFT_TURN -> isLeftTurnSignalOn
         VehicleIndicator.RIGHT_TURN -> isRightTurnSignalOn
+        VehicleIndicator.HAZARD -> areHazardLightsOn
+        VehicleIndicator.UNLOCKED ->
+            powerState != VehiclePowerState.OFF &&
+                (
+                    (isDoorLockSignalAvailable && !areDoorsLocked) ||
+                        (isTrunkLockSignalAvailable && !isTrunkLocked)
+                    )
+        VehicleIndicator.ELECTRONIC_FAULT -> isElectronicFaultActive
+        VehicleIndicator.PASSENGER_AIRBAG_OFF -> isPassengerAirbagDisabled
+        VehicleIndicator.REAR_DEFROST -> isRearDefrostCommandActive
     }
 
 fun VehicleState.hasCriticalWarning(): Boolean =

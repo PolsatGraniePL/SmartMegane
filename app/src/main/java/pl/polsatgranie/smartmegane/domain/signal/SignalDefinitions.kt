@@ -87,17 +87,23 @@ object SignalDefinitions {
     val asrEspButtonReleasePulse =
         key("esp.off_button_release", "Impuls zwolnienia przycisku ASR/ESP")
     val asrEspDisabled = key("esp.disabled", "ASR/ESP wyłączone")
-    val wheelPairAFirstRaw = key("wheel.pair_a.first_raw", "Koło A1 (raw)")
-    val wheelPairASecondRaw = key("wheel.pair_a.second_raw", "Koło A2 (raw)")
+    val wheelPairARightSpeedKph =
+        key("wheel.pair_a.right_speed_kph", "Prawe koło pary/osi A")
+    val wheelPairALeftSpeedKph =
+        key("wheel.pair_a.left_speed_kph", "Lewe koło pary/osi A")
     val wheelPairAAliveCounter = key("wheel.pair_a.alive_counter", "Licznik ABS A")
     val wheelPairAChecksum = key("wheel.pair_a.checksum", "Suma kontrolna ABS A")
-    val wheelPairBFirstRaw = key("wheel.pair_b.first_raw", "Koło B1 (raw)")
-    val wheelPairBSecondRaw = key("wheel.pair_b.second_raw", "Koło B2 (raw)")
+    val wheelPairBRightSpeedKph =
+        key("wheel.pair_b.right_speed_kph", "Prawe koło pary/osi B")
+    val wheelPairBLeftSpeedKph =
+        key("wheel.pair_b.left_speed_kph", "Lewe koło pary/osi B")
     val wheelPairBAliveCounter = key("wheel.pair_b.alive_counter", "Licznik ABS B")
     val wheelPairBChecksum = key("wheel.pair_b.checksum", "Suma kontrolna ABS B")
-    val yawRaw = key("inertial.yaw_raw", "Odchylenie/yaw (raw)")
-    val inertialAxisARaw = key("inertial.axis_a_raw", "Oś inercyjna A (raw)")
-    val inertialAxisBRaw = key("inertial.axis_b_raw", "Oś inercyjna B (raw)")
+    val longitudinalAccelerationRaw =
+        key("inertial.longitudinal_acceleration_raw", "Przyspieszenie wzdłużne (raw)")
+    val lateralAccelerationRaw =
+        key("inertial.lateral_acceleration_raw", "Przyspieszenie poprzeczne (raw)")
+    val yawRateRaw = key("inertial.yaw_rate_raw", "Prędkość yaw (raw)")
     val vehicleSpeedKph = key("vehicle.speed_kph", "Prędkość")
     val distanceSinceStart =
         key("trip.distance_since_start_m", "Dystans od uruchomienia")
@@ -107,7 +113,8 @@ object SignalDefinitions {
     val clusterNetworkActive =
         key("cluster.network_active", "Aktywna sieć zestawu wskaźników")
     val clusterWakeup = key("cluster.wakeup", "Wybudzenie zestawu wskaźników")
-    val rearDefrostOn = key("climate.rear_defrost", "Ogrzewanie tylnej szyby")
+    val rearDefrostCommandActive =
+        key("climate.rear_defrost_command", "Impuls ogrzewania tylnej szyby")
     val wipersMode = key("wipers.mode", "Tryb wycieraczek")
     val engineRunning = key("engine.running", "Silnik pracuje")
     val clusterTransition =
@@ -162,8 +169,10 @@ object SignalDefinitions {
     val ignitionOn = key("ignition.on", "Zapłon RUN")
     val leftTurnSignal = key("turn.left", "Lewy kierunkowskaz")
     val rightTurnSignal = key("turn.right", "Prawy kierunkowskaz")
-    val trunkLocked = key("locks.trunk", "Zamek bagażnika")
-    val doorsLocked = key("locks.doors", "Zamek drzwi")
+    val doorsLocked = key("locks.doors", "Drzwi zaryglowane")
+    val trunkLocked = key("locks.trunk", "Klapa bagażnika zaryglowana")
+    val electronicFault =
+        key("fault.electronic", "Usterka elektroniki")
     val rearFogLights = key("lights.rear_fog", "Tylne przeciwmgielne")
     val outsideTemperature = key("temperature.outside", "Temperatura zewnętrzna")
     val reverseFrameStatusRaw =
@@ -260,45 +269,69 @@ object SignalDefinitions {
         bitSignal(asrEspButtonReleasePulse, ID_ESP_CONTROL, 5, 0x08),
 
         intSignal(
-            wheelPairAFirstRaw,
+            wheelPairARightSpeedKph,
             ID_WHEEL_PAIR_A,
             0,
             2,
             littleEndian = false,
-            validWhen = { frame -> be16(frame, 0) != 0xFFFF },
+            scale = 0.005,
+            unit = "km/h",
+            validWhen = { frame ->
+                be16(frame, 0) != 0xFFFF && wheelFrameChecksumValid(frame, 0x86)
+            },
         ),
         intSignal(
-            wheelPairASecondRaw,
+            wheelPairALeftSpeedKph,
             ID_WHEEL_PAIR_A,
             2,
             2,
             littleEndian = false,
-            validWhen = { frame -> be16(frame, 2) != 0xFFFF },
+            scale = 0.005,
+            unit = "km/h",
+            validWhen = { frame ->
+                be16(frame, 2) != 0xFFFF && wheelFrameChecksumValid(frame, 0x86)
+            },
         ),
         intSignal(wheelPairAAliveCounter, ID_WHEEL_PAIR_A, 6, 1, littleEndian = false),
         intSignal(wheelPairAChecksum, ID_WHEEL_PAIR_A, 7, 1, littleEndian = false),
         intSignal(
-            wheelPairBFirstRaw,
+            wheelPairBRightSpeedKph,
             ID_WHEEL_PAIR_B,
             0,
             2,
             littleEndian = false,
-            validWhen = { frame -> be16(frame, 0) != 0xFFFF },
+            scale = 0.005,
+            unit = "km/h",
+            validWhen = { frame ->
+                be16(frame, 0) != 0xFFFF && wheelFrameChecksumValid(frame, 0x87)
+            },
         ),
         intSignal(
-            wheelPairBSecondRaw,
+            wheelPairBLeftSpeedKph,
             ID_WHEEL_PAIR_B,
             2,
             2,
             littleEndian = false,
-            validWhen = { frame -> be16(frame, 2) != 0xFFFF },
+            scale = 0.005,
+            unit = "km/h",
+            validWhen = { frame ->
+                be16(frame, 2) != 0xFFFF && wheelFrameChecksumValid(frame, 0x87)
+            },
         ),
         intSignal(wheelPairBAliveCounter, ID_WHEEL_PAIR_B, 6, 1, littleEndian = false),
         intSignal(wheelPairBChecksum, ID_WHEEL_PAIR_B, 7, 1, littleEndian = false),
 
-        intSignal(yawRaw, ID_INERTIAL, 0, 1, littleEndian = false),
         intSignal(
-            inertialAxisARaw,
+            longitudinalAccelerationRaw,
+            ID_INERTIAL,
+            0,
+            1,
+            littleEndian = false,
+            offset = -200.0,
+            unit = "raw",
+        ),
+        intSignal(
+            lateralAccelerationRaw,
             ID_INERTIAL,
             1,
             2,
@@ -307,7 +340,7 @@ object SignalDefinitions {
             validWhen = { frame -> be16(frame, 1) != 0x7FFF },
         ),
         intSignal(
-            inertialAxisBRaw,
+            yawRateRaw,
             ID_INERTIAL,
             3,
             2,
@@ -340,7 +373,13 @@ object SignalDefinitions {
 
         bitSignal(clusterNetworkActive, ID_CLUSTER_CONTROLS, 0, 0x80),
         bitSignal(clusterWakeup, ID_CLUSTER_CONTROLS, 0, 0x40),
-        maskedBoolSignal(rearDefrostOn, ID_CLUSTER_CONTROLS, 0, 0x06, 0x06),
+        maskedBoolSignal(
+            rearDefrostCommandActive,
+            ID_CLUSTER_CONTROLS,
+            0,
+            0x06,
+            0x06,
+        ),
         enumSignal(
             wipersMode,
             ID_CLUSTER_CONTROLS,
@@ -461,8 +500,9 @@ object SignalDefinitions {
         bitSignal(ignitionOn, ID_BODY, 1, 0x04),
         bitSignal(accessoryPowerOn, ID_BODY, 1, 0x02),
         bitSignal(frontFogLights, ID_BODY, 1, 0x01),
-        bitSignal(doorsLocked, ID_BODY, 2, 0x20),
-        bitSignal(trunkLocked, ID_BODY, 2, 0x10),
+        bitSignal(doorsLocked, ID_BODY, 2, 0x10),
+        bitSignal(trunkLocked, ID_BODY, 2, 0x08),
+        maskedBoolSignal(electronicFault, ID_BODY, 2, 0xC0, 0xC0),
         bitSignal(rearFogLights, ID_BODY, 2, 0x04),
         intSignal(
             outsideTemperature,
@@ -520,12 +560,15 @@ object SignalDefinitions {
             keys = listOf(
                 steeringAngleDegrees,
                 steeringAngularVelocityRaw,
-                wheelPairAFirstRaw,
-                wheelPairASecondRaw,
-                wheelPairBFirstRaw,
-                wheelPairBSecondRaw,
+                wheelPairARightSpeedKph,
+                wheelPairALeftSpeedKph,
+                wheelPairBRightSpeedKph,
+                wheelPairBLeftSpeedKph,
+                longitudinalAccelerationRaw,
+                lateralAccelerationRaw,
+                yawRateRaw,
                 wipersMode,
-                rearDefrostOn,
+                rearDefrostCommandActive,
                 doorFrontLeft,
                 doorFrontRight,
                 doorRearLeft,
@@ -546,6 +589,7 @@ object SignalDefinitions {
                 asrEspDisabled,
                 driverSeatBeltWarning,
                 parkingBrake,
+                electronicFault,
             ),
         ),
         SignalGroup(
@@ -579,6 +623,15 @@ object SignalDefinitions {
 
     private fun reverseFrameValid(frame: CanFrame): Boolean =
         frame.dlc > 6 && byte(frame, 6) and 0x0F == 0x01
+
+    private fun wheelFrameChecksumValid(
+        frame: CanFrame,
+        salt: Int,
+    ): Boolean {
+        if (frame.dlc < 8) return false
+        val calculated = ((0..6).sumOf { byte(frame, it) } + salt) and 0xFF
+        return calculated == byte(frame, 7)
+    }
 
     private fun be16(frame: CanFrame, startByte: Int): Int =
         if (startByte + 1 < frame.dlc) {

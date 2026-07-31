@@ -106,7 +106,7 @@ class SignalDefinitionsTest {
         val state = apply(
             frame(
                 0x60D,
-                0xFE, 0x6F, 0x34, 0x00, 0x3C, 0x62, 0x11, 0x03,
+                0xFE, 0x6F, 0xDC, 0x00, 0x3C, 0x62, 0x11, 0x03,
             ),
         )
 
@@ -125,12 +125,13 @@ class SignalDefinitionsTest {
             SignalDefinitions.rightTurnSignal,
             SignalDefinitions.ignitionOn,
             SignalDefinitions.accessoryPowerOn,
-            SignalDefinitions.doorsLocked,
-            SignalDefinitions.trunkLocked,
             SignalDefinitions.reverseGear,
             SignalDefinitions.tripComputerUp,
             SignalDefinitions.tripComputerDown,
         ).forEach { key -> assertTrue(key.id, state.boolean(key)) }
+        assertTrue(state.boolean(SignalDefinitions.electronicFault))
+        assertTrue(state.boolean(SignalDefinitions.doorsLocked))
+        assertTrue(state.boolean(SignalDefinitions.trunkLocked))
         assertEquals(20.0, state.number(SignalDefinitions.outsideTemperature), 0.0)
     }
 
@@ -152,9 +153,58 @@ class SignalDefinitionsTest {
             )
             val mode = state.get(SignalDefinitions.wipersMode) as SignalValue.Enum
             assertEquals(code, mode.code)
-            assertTrue(state.boolean(SignalDefinitions.rearDefrostOn))
+            assertTrue(state.boolean(SignalDefinitions.rearDefrostCommandActive))
             assertTrue(state.boolean(SignalDefinitions.engineRunning))
         }
+    }
+
+    @Test
+    fun decodesCalibratedWheelSpeedsAndResolvedInertialAxes() {
+        var state = apply(
+            frame(
+                0x284,
+                0x07, 0xD0, 0x07, 0xE4, 0x00, 0x00, 0x01, 0x49,
+            ),
+        )
+        state = apply(
+            frame(
+                0x285,
+                0x03, 0xE8, 0x04, 0xB0, 0x00, 0x00, 0x02, 0x28,
+            ),
+            state,
+        )
+        state = apply(
+            frame(
+                0x2A0,
+                0xC5, 0x80, 0x0F, 0x7F, 0xF0, 0x00, 0x00, 0x00,
+            ),
+            state,
+        )
+
+        assertEquals(10.0, state.number(SignalDefinitions.wheelPairARightSpeedKph), 0.0)
+        assertEquals(10.1, state.number(SignalDefinitions.wheelPairALeftSpeedKph), 0.0)
+        assertEquals(5.0, state.number(SignalDefinitions.wheelPairBRightSpeedKph), 0.0)
+        assertEquals(6.0, state.number(SignalDefinitions.wheelPairBLeftSpeedKph), 0.0)
+        assertEquals(
+            -3.0,
+            state.number(SignalDefinitions.longitudinalAccelerationRaw),
+            0.0,
+        )
+        assertEquals(16.0, state.number(SignalDefinitions.lateralAccelerationRaw), 0.0)
+        assertEquals(-15.0, state.number(SignalDefinitions.yawRateRaw), 0.0)
+    }
+
+    @Test
+    fun rejectsWheelSpeedsWhenAbsChecksumIsInvalid() {
+        val state = apply(
+            frame(
+                0x284,
+                0x07, 0xD0, 0x07, 0xE4, 0x00, 0x00, 0x01, 0x00,
+            ),
+        )
+
+        assertNull(state.get(SignalDefinitions.wheelPairARightSpeedKph))
+        assertNull(state.get(SignalDefinitions.wheelPairALeftSpeedKph))
     }
 
     @Test

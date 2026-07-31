@@ -3,6 +3,7 @@ package pl.polsatgranie.smartmegane.data.vehicle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import pl.polsatgranie.smartmegane.domain.vehicle.VehiclePowerState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleTelemetry
 import pl.polsatgranie.smartmegane.domain.vehicle.WiperMode
@@ -12,7 +13,7 @@ import pl.polsatgranie.smartmegane.domain.vehicle.WiperMode
  * Change [previewState] to exercise every dashboard state without a connected car.
  */
 class PlaceholderVehicleTelemetry(
-    previewState: VehicleState = parkedPreviewState,
+    previewState: VehicleState = VehicleState(),
 ) : VehicleTelemetry {
     private val mutableState = MutableStateFlow(previewState)
     override val state: StateFlow<VehicleState> = mutableState.asStateFlow()
@@ -62,8 +63,6 @@ class PlaceholderVehicleTelemetry(
 //            isCoolantOverheatWarningActive = false,
 //            steeringWheelAngleDegrees = null,
 //            wiperMode = WiperMode.OFF,
-            outsideTemperatureCelsius = 0,
-
         )
     }
 }

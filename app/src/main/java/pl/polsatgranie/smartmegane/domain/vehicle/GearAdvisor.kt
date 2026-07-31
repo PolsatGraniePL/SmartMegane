@@ -85,8 +85,8 @@ data class GearAdvisorInput(
 }
 
 /**
- * Factory drivetrain data for the 78 kW K9K engine and TL4-001 six-speed
- * transmission used by the Mégane II 1.5 dCi 105/106.
+ * Drivetrain profile for the 77/78 kW K9K engine and TL4 six-speed
+ * transmission used by the Mégane II 1.5 dCi 105/106 Grandtour.
  *
  * Values are vehicle speed in km/h at 1,000 engine rpm. Keeping this table in
  * the domain layer lets both gear inference and clutch rev matching use exactly
@@ -408,7 +408,10 @@ class GearAdvisor {
             ) ?: contextualPreferred
         }
 
-        val currentGear = estimate.forwardGear
+        val currentGear = estimate.forwardGear ?: estimate.lastStableGear.takeIf {
+            estimate.status == GearEstimateStatus.AMBIGUOUS ||
+                estimate.status == GearEstimateStatus.SHIFTING
+        }
         val requestedDirection = if (currentGear == null) {
             ShiftDirection.NONE
         } else {
@@ -441,7 +444,8 @@ class GearAdvisor {
                 input.reverseEngaged == false &&
                 nowMs >= postClutchCooldownUntilMs &&
                 speed >= MIN_ARROW_SPEED_KPH &&
-                estimate.status == GearEstimateStatus.COUPLED &&
+                (estimate.status == GearEstimateStatus.COUPLED ||
+                    estimate.status == GearEstimateStatus.AMBIGUOUS) &&
                 estimate.confidence >= MIN_ARROW_CONFIDENCE &&
                 requestedDirection != ShiftDirection.NONE
         val direction = when {
@@ -758,7 +762,7 @@ class GearAdvisor {
         const val MAX_RELATIVE_RATIO_ERROR = 0.08
         const val MAX_COUPLED_RATIO_ERROR = 0.05
         const val MIN_ARROW_SPEED_KPH = 5.0
-        const val MIN_ARROW_CONFIDENCE = 0.72f
+        const val MIN_ARROW_CONFIDENCE = 0.62f
         const val MIN_REV_MATCH_CONFIDENCE = 0.65f
         const val GEAR_DWELL_MS = 320L
         const val LOW_SPEED_GEAR_DWELL_MS = 500L

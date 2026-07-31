@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 class UsbSerialDataSource(
@@ -174,7 +175,9 @@ class UsbSerialDataSource(
         }
         if (!usbManager.hasPermission(device)) {
             _connectionState.value = UsbConnectionState.PermissionRequired(device.deviceName)
-            val granted = requestPermission(device)
+            val granted = withTimeoutOrNull(15_000L) {
+                requestPermission(device)
+            } == true
             if (!granted || !usbManager.hasPermission(device)) {
                 _connectionState.value = UsbConnectionState.PermissionDenied(device.deviceName)
                 Log.w(TAG, "USB permission denied for ${device.deviceName}")
@@ -233,7 +236,10 @@ class UsbSerialDataSource(
                 context,
                 device.deviceId,
                 Intent(action).setPackage(context.packageName),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                // UsbManager adds EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED to
+                // this PendingIntent. An immutable PendingIntent prevents those
+                // system extras from reaching the receiver on recent Android.
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             usbManager.requestPermission(device, pendingIntent)
             cont.invokeOnCancellation { runCatching { context.unregisterReceiver(receiver) } }
