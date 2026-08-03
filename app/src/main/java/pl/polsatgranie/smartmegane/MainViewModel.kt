@@ -17,6 +17,7 @@ import pl.polsatgranie.smartmegane.data.serial.UsbConnectionState
 import pl.polsatgranie.smartmegane.data.serial.UsbDeviceInfo
 import pl.polsatgranie.smartmegane.data.serial.UsbSerialDataSource
 import pl.polsatgranie.smartmegane.data.vehicle.PlaceholderVehicleTelemetry
+import pl.polsatgranie.smartmegane.data.vehicle.LastVehicleSnapshotRepository
 import pl.polsatgranie.smartmegane.data.vehicle.VehicleSignalAdapter
 import pl.polsatgranie.smartmegane.data.trip.TripHistoryRepository
 import pl.polsatgranie.smartmegane.domain.phone.PhoneOrientation
@@ -30,6 +31,9 @@ import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallAdvisor
 import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallGuidance
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleState
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleStateDeriver
+import pl.polsatgranie.smartmegane.domain.vehicle.LiveVehicleStateStabilizer
+import pl.polsatgranie.smartmegane.domain.vehicle.AutoDisplayAdvisor
+import pl.polsatgranie.smartmegane.domain.vehicle.AutoDisplayMode
 import pl.polsatgranie.smartmegane.domain.vehicle.ParkingSlopeAdvisor
 import pl.polsatgranie.smartmegane.domain.vehicle.ParkingSlopeGuidance
 import pl.polsatgranie.smartmegane.domain.vehicle.RpmSuitabilityAdvisor
@@ -42,14 +46,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         private const val TARGET_VENDOR_ID = 0x1A86
         private const val TARGET_PRODUCT_ID = 0x7523
-        private const val SIGNAL_WATCHDOG_INTERVAL_MS = 100L
+        private const val VEHICLE_PUBLISH_INTERVAL_MS = 25L
+        private const val DIAGNOSTICS_PUBLISH_INTERVAL_MS = 100L
+        private const val TRIP_UI_PUBLISH_INTERVAL_MS = 200L
+        private const val SNAPSHOT_SAVE_INTERVAL_MS = 2_000L
         private const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 
     private val usbDataSource = UsbSerialDataSource(application)
     private val vehicleTelemetry = PlaceholderVehicleTelemetry()
     private val vehicleSignalAdapter = VehicleSignalAdapter()
+    private val liveVehicleStateStabilizer = LiveVehicleStateStabilizer()
     private val vehicleStateDeriver = VehicleStateDeriver()
+    private val autoDisplayAdvisor = AutoDisplayAdvisor()
     private val parser = WaveshareFrameParser()
     private val parserLock = Any()
     private val signalMapper = SignalMapper(SignalDefinitions.specs)
@@ -58,8 +67,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val phoneOrientationDataSource = PhoneOrientationDataSource(application)
     private val tripTracker = TripTracker()
     private val tripHistoryRepository = TripHistoryRepository(application)
+    private val lastVehicleSnapshotRepository = LastVehicleSnapshotRepository(application)
+    private val initialVehicleState =
+        lastVehicleSnapshotRepository.load() ?: vehicleTelemetry.state.value
     @Volatile
     private var lastCanFrameTimestampMs: Long? = null
+    @Volatile
+    private var latestSignalState = SignalState()
+    private var lastDiagnosticsPublishAtMs = 0L
+    private var lastTripUiPublishAtMs = 0L
+    private var lastSnapshotSaveAtMs = 0L
     private var lastDeviceIds: Set<Int> = emptySet()
     private var lastAutoConnectDeviceId: Int? = null
     private var autoConnectSuppressed = false
@@ -71,11 +88,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val connectionState: StateFlow<UsbConnectionState> = usbDataSource.connectionState
     val phoneOrientation: StateFlow<PhoneOrientation> =
         phoneOrientationDataSource.orientation
-    private val _vehicleState = MutableStateFlow(vehicleTelemetry.state.value)
+    private val _vehicleState = MutableStateFlow(initialVehicleState)
     val vehicleState: StateFlow<VehicleState> = _vehicleState.asStateFlow()
     private val _gearGuidance = MutableStateFlow(
         gearAdvisor.update(
-            input = GearAdvisorInput.from(vehicleTelemetry.state.value),
+            input = GearAdvisorInput.from(initialVehicleState),
             nowMs = monotonicNowMs(),
         ),
     )
@@ -94,33 +111,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tripHistory: StateFlow<List<TripSummary>> = _tripHistory.asStateFlow()
     private val _lastTripSummary = MutableStateFlow<TripSummary?>(null)
     val lastTripSummary: StateFlow<TripSummary?> = _lastTripSummary.asStateFlow()
+    private val _autoDisplayMode = MutableStateFlow(AutoDisplayMode.VEHICLE)
+    val autoDisplayMode: StateFlow<AutoDisplayMode> = _autoDisplayMode.asStateFlow()
 
     init {
         usbDataSource.startMonitoring()
         phoneOrientationDataSource.start()
         viewModelScope.launch(Dispatchers.Default) {
             usbDataSource.bytes.collect { bytes ->
-                val frames = synchronized(parserLock) { parser.append(bytes) }
-                if (frames.isEmpty()) return@collect
-                var updatedSignals = _signalState.value
-                for (frame in frames) {
-                    updatedSignals = signalMapper.applyFrame(updatedSignals, frame)
+                synchronized(parserLock) {
+                    val frames = parser.append(bytes)
+                    if (frames.isNotEmpty() &&
+                        connectionState.value is UsbConnectionState.Connected
+                    ) {
+                        latestSignalState = signalMapper.applyFrames(
+                            latestSignalState,
+                            frames,
+                        )
+                        lastCanFrameTimestampMs = frames.last().timestampMs
+                    }
                 }
-                if (connectionState.value !is UsbConnectionState.Connected) return@collect
-                val newestTimestampMs = frames.last().timestampMs
-                _signalState.value = updatedSignals
-                lastCanFrameTimestampMs = newestTimestampMs
-                // One coherent publication per USB read batch avoids hundreds
-                // of redundant Compose updates while preserving every frame in
-                // SignalState. Speed changes from 0x354 are still published in
-                // the same read cycle in which they arrive.
-                publishVehicleState(
-                    state = vehicleSignalAdapter.merge(
-                        signals = updatedSignals,
-                        nowMs = newestTimestampMs,
-                    ),
-                    nowMs = newestTimestampMs,
-                )
             }
         }
         viewModelScope.launch {
@@ -165,14 +175,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(SIGNAL_WATCHDOG_INTERVAL_MS)
+                delay(VEHICLE_PUBLISH_INTERVAL_MS)
                 if (connectionState.value is UsbConnectionState.Connected) {
                     val nowMs = monotonicNowMs()
+                    val signals = latestSignalState
+                    if (nowMs - lastDiagnosticsPublishAtMs >=
+                        DIAGNOSTICS_PUBLISH_INTERVAL_MS
+                    ) {
+                        lastDiagnosticsPublishAtMs = nowMs
+                        _signalState.value = signals
+                    }
+                    val rawState = vehicleSignalAdapter.merge(
+                        signals = signals,
+                        nowMs = nowMs,
+                    )
                     publishVehicleState(
-                        state = vehicleSignalAdapter.merge(
-                            signals = _signalState.value,
+                        state = liveVehicleStateStabilizer.stabilize(
+                            state = rawState,
+                            signals = signals,
                             nowMs = nowMs,
                         ),
                         nowMs = nowMs,
@@ -183,6 +205,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             connectionState.collect { state ->
                 if (state is UsbConnectionState.Connected) {
+                    synchronized(parserLock) {
+                        parser.reset()
+                        latestSignalState = SignalState()
+                    }
+                    _signalState.value = SignalState()
                     resetLiveState(VehicleState())
                 }
                 if (state is UsbConnectionState.Disconnected ||
@@ -190,9 +217,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     state is UsbConnectionState.Error
                 ) {
                     finishTripAfterTelemetryLoss()
-                    synchronized(parserLock) { parser.reset() }
+                    lastVehicleSnapshotRepository.save(_vehicleState.value)
+                    synchronized(parserLock) {
+                        parser.reset()
+                        latestSignalState = SignalState()
+                    }
                     _signalState.value = SignalState()
-                    resetLiveState(vehicleTelemetry.state.value)
+                    resetLiveState(
+                        lastVehicleSnapshotRepository.load() ?: vehicleTelemetry.state.value,
+                    )
                 }
                 if (state is UsbConnectionState.PermissionDenied && lastAutoConnectDeviceId != null) {
                     autoConnectSuppressed = true
@@ -236,6 +269,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastCanFrameTimestampMs = lastCanFrameTimestampMs,
         )
         _vehicleState.value = derivedState
+        _autoDisplayMode.value = if (derivedState.isCanBusActive) {
+            autoDisplayAdvisor.update(
+                speedKph = derivedState.speedKphPrecise,
+                isSpeedAvailable = derivedState.isSpeedSignalAvailable,
+                nowMs = nowMs,
+                sampleTimestampMs = latestSignalState.timestampMs(
+                    SignalDefinitions.vehicleSpeedKph,
+                ),
+            )
+        } else {
+            autoDisplayAdvisor.reset()
+            AutoDisplayMode.VEHICLE
+        }
         _gearGuidance.value = gearAdvisor.update(
             input = GearAdvisorInput.from(derivedState),
             nowMs = nowMs,
@@ -268,8 +314,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .takeIf { phoneOrientation.value.isSensorAvailable },
             ),
         )
-        _currentTrip.value = tripResult.live
+        if (tripResult.completed != null ||
+            nowMs - lastTripUiPublishAtMs >= TRIP_UI_PUBLISH_INTERVAL_MS
+        ) {
+            lastTripUiPublishAtMs = nowMs
+            _currentTrip.value = tripResult.live
+        }
         tripResult.completed?.let(::recordCompletedTrip)
+        if (derivedState.isCanBusActive &&
+            nowMs - lastSnapshotSaveAtMs >= SNAPSHOT_SAVE_INTERVAL_MS
+        ) {
+            lastSnapshotSaveAtMs = nowMs
+            viewModelScope.launch(Dispatchers.IO) {
+                lastVehicleSnapshotRepository.save(derivedState)
+            }
+        }
     }
 
     @Synchronized
@@ -292,7 +351,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun resetLiveState(state: VehicleState) {
         gearAdvisor.reset()
         antiStallAdvisor.reset()
+        liveVehicleStateStabilizer.reset()
         vehicleStateDeriver.reset()
+        autoDisplayAdvisor.reset()
+        _autoDisplayMode.value = AutoDisplayMode.VEHICLE
         lastCanFrameTimestampMs = null
         publishVehicleState(
             state = state,

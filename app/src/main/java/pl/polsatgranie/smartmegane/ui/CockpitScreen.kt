@@ -89,6 +89,7 @@ import pl.polsatgranie.smartmegane.domain.vehicle.RpmSuitabilityState
 import pl.polsatgranie.smartmegane.domain.vehicle.RpmSuitabilityZone
 import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallGuidance
 import pl.polsatgranie.smartmegane.domain.vehicle.AntiStallStatus
+import pl.polsatgranie.smartmegane.domain.vehicle.AutoDisplayMode
 import pl.polsatgranie.smartmegane.domain.vehicle.ShiftDirection
 import pl.polsatgranie.smartmegane.domain.vehicle.VehicleIndicator
 import pl.polsatgranie.smartmegane.domain.vehicle.VehiclePowerState
@@ -123,7 +124,7 @@ private val Amber = Color(0xFFD99A38)
 private val Red = Color(0xFFE64B58)
 private val Blue = Color(0xFF4A91DC)
 private const val STEERING_VISIBILITY_TIMEOUT_MS = 5_000L
-private const val STEERING_DISPLAY_STEP_DEGREES = 2.5f
+private const val STEERING_DISPLAY_STEP_DEGREES = 0.5f
 private const val MAX_STEERING_WHEEL_ANGLE_DEGREES = 576f
 private const val MAX_ROAD_WHEEL_ANGLE_DEGREES = 32f
 private const val TAB_TITLE_VISIBLE_MS = 1_800L
@@ -151,6 +152,7 @@ fun CockpitScreen(
     currentTrip: TripLiveStats,
     tripHistory: List<TripSummary>,
     lastTripSummary: TripSummary?,
+    autoDisplayMode: AutoDisplayMode,
     connectionState: UsbConnectionState,
     onReconnect: () -> Unit,
     onLaunchAssistant: () -> Unit,
@@ -303,6 +305,7 @@ fun CockpitScreen(
                     currentTrip = currentTrip,
                     tripHistory = tripHistory,
                     lastTripSummary = lastTripSummary,
+                    autoDisplayMode = autoDisplayMode,
                     parkingSlopeGuidance = parkingSlopeGuidance,
                     rpmSuitability = rpmSuitability,
                     gearGuidance = gearGuidance,
@@ -506,6 +509,7 @@ private fun DashboardTabContent(
     currentTrip: TripLiveStats,
     tripHistory: List<TripSummary>,
     lastTripSummary: TripSummary?,
+    autoDisplayMode: AutoDisplayMode,
     parkingSlopeGuidance: ParkingSlopeGuidance,
     rpmSuitability: RpmSuitabilityState,
     gearGuidance: GearGuidance,
@@ -526,6 +530,7 @@ private fun DashboardTabContent(
                     PrimaryReadout(
                         state = state,
                         lastTripSummary = lastTripSummary,
+                        autoDisplayMode = autoDisplayMode,
                         parkingSlopeGuidance = parkingSlopeGuidance,
                         uiScale = uiScale,
                         modifier = Modifier.fillMaxSize(),
@@ -828,7 +833,7 @@ private fun SpeedValueReadout(
 ) {
     val displayedSpeed by animateIntAsState(
         targetValue = speedKph,
-        animationSpec = tween(135),
+        animationSpec = tween(60),
         label = "forcedSpeed",
     )
     Column(
@@ -1861,27 +1866,11 @@ private fun InlineState(
 private fun PrimaryReadout(
     state: VehicleState,
     lastTripSummary: TripSummary?,
+    autoDisplayMode: AutoDisplayMode,
     parkingSlopeGuidance: ParkingSlopeGuidance,
     uiScale: Float,
     modifier: Modifier = Modifier,
 ) {
-    val confirmedSpeed = state.speedKphPrecise
-    var showVehicle by remember {
-        mutableStateOf(!state.isSpeedSignalAvailable || (confirmedSpeed ?: 0.0) == 0.0)
-    }
-    LaunchedEffect(confirmedSpeed, state.isSpeedSignalAvailable) {
-        if (!state.isSpeedSignalAvailable || confirmedSpeed == null) return@LaunchedEffect
-        if (confirmedSpeed > 0.0) {
-            showVehicle = false
-        } else {
-            // Two closely spaced 0x354 publications suppress a single stale or
-            // malformed zero without making a real stop feel delayed.
-            delay(140L)
-            if (state.isSpeedSignalAvailable && state.speedKphPrecise == 0.0) {
-                showVehicle = true
-            }
-        }
-    }
     val steeringSample = state.steeringWheelAngleDegrees?.let {
         (it / STEERING_DISPLAY_STEP_DEGREES).roundToInt() * STEERING_DISPLAY_STEP_DEGREES
     }
@@ -1904,7 +1893,7 @@ private fun PrimaryReadout(
         AnimatedContent(
             targetState = when {
                 recentSummary && lastTripSummary != null -> 2
-                showVehicle -> 1
+                autoDisplayMode == AutoDisplayMode.VEHICLE -> 1
                 else -> 0
             },
             transitionSpec = {
@@ -2074,7 +2063,7 @@ private fun VehicleStatusSymbol(
         ),
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium,
+            stiffness = 700f,
         ),
         label = "roadWheelAngle",
     )
@@ -3344,7 +3333,10 @@ private fun RpmSuitabilityRail(
 ) {
     val animatedRpm by animateFloatAsState(
         targetValue = state.currentRpm.toFloat(),
-        animationSpec = tween(110),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = 700f,
+        ),
         label = "rpmSuitabilityTape",
     )
     val safeFirst by animateIntAsState(state.optimalRange.first, tween(180), label = "rpmSafeFirst")

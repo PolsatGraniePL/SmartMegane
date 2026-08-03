@@ -24,6 +24,7 @@ import pl.polsatgranie.smartmegane.data.vehicle.PlaceholderVehicleTelemetry
 import pl.polsatgranie.smartmegane.domain.vehicle.GearEstimate
 import pl.polsatgranie.smartmegane.domain.vehicle.GearEstimateStatus
 import pl.polsatgranie.smartmegane.domain.vehicle.GearGuidance
+import pl.polsatgranie.smartmegane.domain.vehicle.AutoDisplayMode
 import pl.polsatgranie.smartmegane.ui.CockpitScreen
 import pl.polsatgranie.smartmegane.ui.theme.SmartMeganeTheme
 
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
             val currentTrip by viewModel.currentTrip.collectAsStateWithLifecycle()
             val tripHistory by viewModel.tripHistory.collectAsStateWithLifecycle()
             val lastTripSummary by viewModel.lastTripSummary.collectAsStateWithLifecycle()
+            val autoDisplayMode by viewModel.autoDisplayMode.collectAsStateWithLifecycle()
 
             SmartMeganeTheme {
                 CockpitScreen(
@@ -61,6 +63,7 @@ class MainActivity : ComponentActivity() {
                     currentTrip = currentTrip,
                     tripHistory = tripHistory,
                     lastTripSummary = lastTripSummary,
+                    autoDisplayMode = autoDisplayMode,
                     connectionState = connectionState,
                     onReconnect = viewModel::connectFirstAvailable,
                     onLaunchAssistant = ::launchDefaultAssistant,
@@ -136,6 +139,7 @@ fun CockpitPreview() {
                 pl.polsatgranie.smartmegane.domain.trip.TripLiveStats(),
             tripHistory = emptyList(),
             lastTripSummary = null,
+            autoDisplayMode = AutoDisplayMode.VEHICLE,
             connectionState = UsbConnectionState.Disconnected,
             onReconnect = {},
             onLaunchAssistant = {},
