@@ -2726,9 +2726,9 @@ private fun WarningTray(
     uiScale: Float,
 ) {
     val activeIndicators = VehicleIndicator.entries
+        .filterNot { it == VehicleIndicator.WIPERS }
         .filter {
             it.severity != IndicatorSeverity.INFORMATION ||
-                it == VehicleIndicator.WIPERS ||
                 it == VehicleIndicator.UNLOCKED ||
                 it == VehicleIndicator.HAZARD ||
                 it == VehicleIndicator.REAR_DEFROST

@@ -269,19 +269,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastCanFrameTimestampMs = lastCanFrameTimestampMs,
         )
         _vehicleState.value = derivedState
-        _autoDisplayMode.value = if (derivedState.isCanBusActive) {
-            autoDisplayAdvisor.update(
-                speedKph = derivedState.speedKphPrecise,
-                isSpeedAvailable = derivedState.isSpeedSignalAvailable,
-                nowMs = nowMs,
-                sampleTimestampMs = latestSignalState.timestampMs(
-                    SignalDefinitions.vehicleSpeedKph,
-                ),
-            )
-        } else {
-            autoDisplayAdvisor.reset()
-            AutoDisplayMode.VEHICLE
-        }
+        // A short CAN scheduling gap is not a stop. AutoDisplayAdvisor keeps
+        // the previous mode when speed is temporarily unavailable; the mode is
+        // reset to VEHICLE only by the real connection/session reset path.
+        _autoDisplayMode.value = autoDisplayAdvisor.update(
+            speedKph = derivedState.speedKphPrecise,
+            isSpeedAvailable = derivedState.isSpeedSignalAvailable,
+            nowMs = nowMs,
+            sampleTimestampMs = latestSignalState.timestampMs(
+                SignalDefinitions.vehicleSpeedKph,
+            ),
+        )
         _gearGuidance.value = gearAdvisor.update(
             input = GearAdvisorInput.from(derivedState),
             nowMs = nowMs,
